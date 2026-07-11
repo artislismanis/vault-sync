@@ -1,20 +1,77 @@
-// Local sync index, persisted in the plugin data dir via Obsidian adapter
-// APIs (mobile-safe; hard rule 2). Must itself never be synced.
+import type { DataAdapter } from 'obsidian';
+
+// Local sync index, persisted in the plugin dir via Obsidian adapter APIs
+// (mobile-safe; hard rule 2). Never synced itself.
 //
-// Per file: path, mtime, size, content hash, last-synced revision id,
-// excluded flag (selective sync: excluded files stop syncing — divergence is
-// expected there and must not be read as delete/new), and the merge base:
-// plaintext cached for merge-eligible text files under the size cap, hash +
-// revision id only otherwise (base is re-fetched from history on demand).
+// basePlaintext is the merge base: cached for merge-eligible text files under
+// the size cap; null otherwise (binaries never text-merge; oversized bases
+// are re-fetched from server history on demand).
 
 export interface IndexEntry {
   path: string;
   mtime: number;
   size: number;
-  contentHash: string;
-  lastSyncedRevisionId: string | null;
+  lastSyncedRevisionId: string;
   excluded: boolean;
   basePlaintext: string | null;
 }
 
-export {};
+export const BASE_CACHE_MAX_BYTES = 1024 * 1024;
+
+const MERGEABLE_EXTENSIONS = new Set([
+  'md',
+  'txt',
+  'json',
+  'canvas',
+  'csv',
+  'yml',
+  'yaml',
+  'org',
+  'tex',
+]);
+
+export function isMergeableText(path: string): boolean {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return MERGEABLE_EXTENSIONS.has(ext);
+}
+
+export class IndexStore {
+  private entries = new Map<string, IndexEntry>();
+
+  constructor(
+    private adapter: DataAdapter,
+    private filePath: string,
+  ) {}
+
+  static forVault(adapter: DataAdapter, pluginDir: string, vaultId: string): IndexStore {
+    return new IndexStore(adapter, `${pluginDir}/sync-index-${vaultId}.json`);
+  }
+
+  async load(): Promise<void> {
+    this.entries.clear();
+    if (await this.adapter.exists(this.filePath)) {
+      const raw = JSON.parse(await this.adapter.read(this.filePath)) as IndexEntry[];
+      for (const entry of raw) this.entries.set(entry.path, entry);
+    }
+  }
+
+  async persist(): Promise<void> {
+    await this.adapter.write(this.filePath, JSON.stringify([...this.entries.values()]));
+  }
+
+  get(path: string): IndexEntry | undefined {
+    return this.entries.get(path);
+  }
+
+  all(): IndexEntry[] {
+    return [...this.entries.values()];
+  }
+
+  set(entry: IndexEntry): void {
+    this.entries.set(entry.path, entry);
+  }
+
+  remove(path: string): void {
+    this.entries.delete(path);
+  }
+}

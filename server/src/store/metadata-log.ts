@@ -20,12 +20,54 @@ export interface VaultRecord {
   createdAt: string;
 }
 
+export interface ItemRecord {
+  id: string;
+  vaultId: string;
+  pathHmac: string;
+  encryptedPathB64: string;
+}
+
+export interface RevisionRecord {
+  id: string;
+  vaultId: string;
+  itemId: string;
+  parentIds: string[];
+  sizeBytes: number;
+  deviceId: string;
+  clientMtime: string;
+  serverReceivedAt: string;
+  deleted: boolean;
+}
+
 export function vaultMetaKey(vaultId: string): string {
   return `meta/vaults/${vaultId}.json`;
 }
 
+export function itemMetaKey(vaultId: string, itemId: string): string {
+  return `meta/${vaultId}/items/${itemId}.json`;
+}
+
+export function revisionMetaKey(vaultId: string, revisionId: string): string {
+  return `meta/${vaultId}/revisions/${revisionId}.json`;
+}
+
+export function blobKey(vaultId: string, revisionId: string): string {
+  return `blobs/${vaultId}/${revisionId}`;
+}
+
 export async function writeVaultSidecar(store: ObjectStore, record: VaultRecord): Promise<void> {
   await store.put(vaultMetaKey(record.id), JSON.stringify(record));
+}
+
+export async function writeItemSidecar(store: ObjectStore, record: ItemRecord): Promise<void> {
+  await store.put(itemMetaKey(record.vaultId, record.id), JSON.stringify(record));
+}
+
+export async function writeRevisionSidecar(
+  store: ObjectStore,
+  record: RevisionRecord,
+): Promise<void> {
+  await store.put(revisionMetaKey(record.vaultId, record.id), JSON.stringify(record));
 }
 
 export function indexVault(db: Db, record: VaultRecord): void {
@@ -35,16 +77,63 @@ export function indexVault(db: Db, record: VaultRecord): void {
   ).run(record);
 }
 
+export function indexItem(db: Db, record: ItemRecord): void {
+  db.prepare(
+    `INSERT INTO item (id, vault_id, path_hmac, encrypted_path_b64)
+     VALUES (@id, @vaultId, @pathHmac, @encryptedPathB64)
+     ON CONFLICT(id) DO UPDATE SET encrypted_path_b64 = @encryptedPathB64`,
+  ).run(record);
+}
+
+export function indexRevision(db: Db, record: RevisionRecord): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO revision
+       (id, item_id, parent_ids_json, size_bytes, device_id, client_mtime, server_received_at, deleted)
+     VALUES (@id, @itemId, @parentIdsJson, @sizeBytes, @deviceId, @clientMtime, @serverReceivedAt, @deleted)`,
+  ).run({
+    ...record,
+    parentIdsJson: JSON.stringify(record.parentIds),
+    deleted: record.deleted ? 1 : 0,
+  });
+  // item.deleted caches the head state for cheap listing.
+  db.prepare('UPDATE item SET deleted = ? WHERE id = ?').run(
+    record.deleted ? 1 : 0,
+    record.itemId,
+  );
+}
+
 /** Rebuild the SQLite index from the bucket's sidecars. Wipes derived tables first. */
-export async function rebuildIndex(store: ObjectStore, db: Db): Promise<{ vaults: number }> {
+export async function rebuildIndex(
+  store: ObjectStore,
+  db: Db,
+): Promise<{ vaults: number; items: number; revisions: number }> {
   db.exec('DELETE FROM revision; DELETE FROM item; DELETE FROM vault;');
+  const readJson = async <T>(key: string): Promise<T> =>
+    JSON.parse(new TextDecoder().decode(await store.get(key))) as T;
+
   let vaults = 0;
-  for (const key of await store.list('meta/vaults/')) {
-    const record = JSON.parse(new TextDecoder().decode(await store.get(key))) as VaultRecord;
-    indexVault(db, record);
+  let items = 0;
+  let revisions = 0;
+  for (const vaultKey of await store.list('meta/vaults/')) {
+    const vault = await readJson<VaultRecord>(vaultKey);
+    indexVault(db, vault);
     vaults++;
+    for (const itemKey of await store.list(`meta/${vault.id}/items/`)) {
+      indexItem(db, await readJson<ItemRecord>(itemKey));
+      items++;
+    }
+    // indexRevision keeps item.deleted in sync with the latest revision seen;
+    // order within an item doesn't matter for heads (computed from the DAG),
+    // but apply in serverReceivedAt order so the deleted cache lands right.
+    const revisionRecords: RevisionRecord[] = [];
+    for (const revKey of await store.list(`meta/${vault.id}/revisions/`)) {
+      revisionRecords.push(await readJson<RevisionRecord>(revKey));
+    }
+    revisionRecords.sort((a, b) => a.serverReceivedAt.localeCompare(b.serverReceivedAt));
+    for (const record of revisionRecords) {
+      indexRevision(db, record);
+      revisions++;
+    }
   }
-  // TODO(sync-engine): rebuild item + revision tables from meta/{vaultId}/…
-  // sidecars when those write paths land.
-  return { vaults };
+  return { vaults, items, revisions };
 }

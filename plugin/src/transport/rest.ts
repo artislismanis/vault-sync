@@ -1,20 +1,131 @@
 import { requestUrl } from 'obsidian';
-import { healthResponseSchema, HealthResponse } from '@vault-sync/shared';
+import {
+  CreateVaultRequest,
+  HeadsResponse,
+  headsResponseSchema,
+  HealthResponse,
+  healthResponseSchema,
+  ListVaultsResponse,
+  listVaultsResponseSchema,
+  LoginResponse,
+  loginResponseSchema,
+  PushRevisionRequest,
+  Revision,
+  revisionSchema,
+} from '@vault-sync/shared';
 
 // REST client. Uses Obsidian's requestUrl (not fetch): it bypasses webview
 // CORS restrictions, which matters on mobile and for self-signed/VPN setups.
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
 
 export class RestClient {
   constructor(
     private baseUrl: string,
     private token: string | null = null,
-  ) {}
-
-  async health(): Promise<HealthResponse> {
-    const res = await requestUrl({ url: `${this.baseUrl}/healthz` });
-    return healthResponseSchema.parse(res.json);
+  ) {
+    this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
-  // login / vaults / items / revisions / blobs methods land with the sync
-  // engine, all request/response shapes parsed via @vault-sync/shared schemas.
+  setToken(token: string): void {
+    this.token = token;
+  }
+
+  private async request(options: {
+    path: string;
+    method?: string;
+    json?: unknown;
+    binary?: Uint8Array;
+  }): Promise<{ status: number; json: unknown; arrayBuffer: ArrayBuffer }> {
+    const headers: Record<string, string> = {};
+    if (this.token) headers.authorization = `Bearer ${this.token}`;
+    const res = await requestUrl({
+      url: `${this.baseUrl}${options.path}`,
+      method: options.method ?? 'GET',
+      headers,
+      contentType: options.binary
+        ? 'application/octet-stream'
+        : options.json !== undefined
+          ? 'application/json'
+          : undefined,
+      body: options.binary
+        ? toArrayBuffer(options.binary)
+        : options.json !== undefined
+          ? JSON.stringify(options.json)
+          : undefined,
+      throw: false,
+    });
+    if (res.status >= 400) {
+      let detail = '';
+      try {
+        detail = (res.json as { error?: string })?.error ?? '';
+      } catch {
+        // non-JSON error body
+      }
+      throw new Error(`${options.method ?? 'GET'} ${options.path} failed (${res.status}) ${detail}`);
+    }
+    return {
+      status: res.status,
+      get json() {
+        return res.status === 204 ? undefined : res.json;
+      },
+      get arrayBuffer() {
+        return res.arrayBuffer;
+      },
+    };
+  }
+
+  async health(): Promise<HealthResponse> {
+    return healthResponseSchema.parse((await this.request({ path: '/healthz' })).json);
+  }
+
+  async login(password: string, deviceName: string): Promise<LoginResponse> {
+    const res = await this.request({
+      path: '/login',
+      method: 'POST',
+      json: { password, deviceName },
+    });
+    const parsed = loginResponseSchema.parse(res.json);
+    this.token = parsed.token;
+    return parsed;
+  }
+
+  async listVaults(): Promise<ListVaultsResponse> {
+    return listVaultsResponseSchema.parse((await this.request({ path: '/vaults' })).json);
+  }
+
+  async createVault(request: CreateVaultRequest): Promise<{ id: string }> {
+    const res = await this.request({ path: '/vaults', method: 'POST', json: request });
+    return res.json as { id: string };
+  }
+
+  async heads(vaultId: string): Promise<HeadsResponse> {
+    return headsResponseSchema.parse(
+      (await this.request({ path: `/vaults/${vaultId}/heads` })).json,
+    );
+  }
+
+  async putBlob(vaultId: string, revisionId: string, ciphertext: Uint8Array): Promise<void> {
+    await this.request({
+      path: `/vaults/${vaultId}/blobs/${revisionId}`,
+      method: 'PUT',
+      binary: ciphertext,
+    });
+  }
+
+  async getBlob(vaultId: string, revisionId: string): Promise<Uint8Array> {
+    const res = await this.request({ path: `/vaults/${vaultId}/blobs/${revisionId}` });
+    return new Uint8Array(res.arrayBuffer);
+  }
+
+  async postRevision(vaultId: string, request: PushRevisionRequest): Promise<Revision> {
+    const res = await this.request({
+      path: `/vaults/${vaultId}/revisions`,
+      method: 'POST',
+      json: request,
+    });
+    return revisionSchema.parse(res.json);
+  }
 }

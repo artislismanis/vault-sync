@@ -131,6 +131,36 @@ three-way merge's sweet spot. Door open: a future revision type can carry
 encrypted CRDT (e.g. Yjs) updates as a per-file merge strategy for
 in-Obsidian markdown edits, diff3 fallback for external edits.
 
+**2026-07-11 — Push protocol: client-generated revision ids, blob uploaded
+before metadata.** Client mints the revision UUID, PUTs the ciphertext blob,
+then POSTs revision metadata; the server verifies the blob exists before
+accepting (tombstones exempt). Why: makes uploads idempotent-retryable and
+guarantees no accepted revision ever lacks its content; orphan blobs from
+crashed pushes are harmless garbage (GC later). Rules out: server-minted ids,
+multipart metadata+content uploads.
+
+**2026-07-11 — Session tokens are ephemeral local state, deliberately NOT in
+the bucket.** Stored hashed (SHA-256) in the SQLite index only; losing the
+index forces re-login and nothing else. Why: tokens are re-derivable
+credentials, not data; keeping them out of backups shrinks what a stolen
+backup yields. WS authenticates via `?token=` query param (webviews can't set
+WS headers).
+
+**2026-07-11 — Plugin persists the unwrapped VMK, never the passphrase.**
+Stored base64 in plugin data after unlock. Why: re-running 64 MiB Argon2id on
+every mobile cold start costs seconds; the device already holds the whole
+vault in plaintext, so a locally cached VMK adds no exposure. Content, path,
+and MAC keys are derived per-purpose from the VMK via crypto_kdf (BLAKE2b,
+distinct contexts).
+
+**2026-07-11 — Conflict semantics: edits beat deletes in both directions;
+concurrent heads are merged by the next client that sees them.** Local edit
+vs remote tombstone → push resurrects; local delete vs remote edit → pull
+restores. Multi-head DAG states are collapsed by a merge revision citing all
+heads (diff3 when text+base allows, otherwise newest head keeps the path and
+the rest become conflict siblings — nothing discarded). Local deletes applied
+from remote tombstones go to the vault-local trash, not hard deletion.
+
 **2026-07-11 — Monorepo tooling: npm workspaces with TS-source internal
 packages.** `shared/` exports raw `.ts` (no dist/); esbuild/tsx/vitest consume
 it directly, `tsc --noEmit` per package for types. Node 24 (engines ≥22).

@@ -57,6 +57,32 @@ export const revisionSchema = z.object({
   deleted: z.boolean(),
 });
 
+// Push: client generates the revision id, uploads the blob FIRST
+// (PUT /vaults/:id/blobs/:revisionId), then posts this metadata. The server
+// verifies the blob exists before accepting; orphan blobs from crashed pushes
+// are harmless garbage. Tombstones (deleted: true) carry no blob.
+export const pushRevisionRequestSchema = z.object({
+  id: revisionIdSchema,
+  pathHmac: z.string().regex(/^[0-9a-f]{64}$/),
+  encryptedPathB64: z.string(),
+  parentIds: z.array(revisionIdSchema),
+  sizeBytes: z.number().int().nonnegative(),
+  clientMtime: z.iso.datetime(),
+  deleted: z.boolean(),
+});
+
+export const itemHeadsSchema = z.object({
+  itemId: itemIdSchema,
+  pathHmac: z.string(),
+  encryptedPathB64: z.string(),
+  // Multiple heads = concurrent edits awaiting client-side resolution.
+  heads: z.array(revisionSchema).min(1),
+});
+
+export const headsResponseSchema = z.object({
+  items: z.array(itemHeadsSchema),
+});
+
 export type KdfParams = z.infer<typeof kdfParamsSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
@@ -65,3 +91,6 @@ export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
 export type VaultSummary = z.infer<typeof vaultSummarySchema>;
 export type ListVaultsResponse = z.infer<typeof listVaultsResponseSchema>;
 export type Revision = z.infer<typeof revisionSchema>;
+export type PushRevisionRequest = z.infer<typeof pushRevisionRequestSchema>;
+export type ItemHeads = z.infer<typeof itemHeadsSchema>;
+export type HeadsResponse = z.infer<typeof headsResponseSchema>;

@@ -35,6 +35,13 @@ CREATE TABLE IF NOT EXISTS revision (
   deleted       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS revision_item ON revision(item_id);
+CREATE TABLE IF NOT EXISTS device (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  token_hash    TEXT NOT NULL UNIQUE,
+  created_at    TEXT NOT NULL,
+  last_seen     TEXT NOT NULL
+);
 `;
 
 export type Db = Database.Database;

@@ -1,6 +1,7 @@
 import {
   S3Client,
   HeadBucketCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   GetObjectCommand,
   DeleteObjectCommand,
@@ -15,6 +16,7 @@ export interface ObjectStore {
   checkBucket(): Promise<boolean>;
   put(key: string, body: Uint8Array | string): Promise<void>;
   get(key: string): Promise<Uint8Array>;
+  exists(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;
 }
@@ -47,6 +49,14 @@ export function createObjectStore(config: Config): ObjectStore {
     async get(Key) {
       const res = await client.send(new GetObjectCommand({ Bucket, Key }));
       return res.Body!.transformToByteArray();
+    },
+    async exists(Key) {
+      try {
+        await client.send(new HeadObjectCommand({ Bucket, Key }));
+        return true;
+      } catch {
+        return false;
+      }
     },
     async delete(Key) {
       await client.send(new DeleteObjectCommand({ Bucket, Key }));
