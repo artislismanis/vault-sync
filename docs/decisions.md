@@ -171,6 +171,14 @@ one-tap updates on mobile, single version stream keeps plugin/server pairing
 obvious. Rules out: community-plugin submission for now; private-repo BRAT
 tokens on every device.
 
+**2026-07-11 — Account credential stays a pre-provisioned env hash for now;
+first-boot setup deferred.** Owner reviewed the friction and chose to keep
+it: single user, no user DB, and the env carries only the scrypt hash (safe
+to expose in Portainer/inspect/backups) — the manual `hash-password` step is
+the stand-in for a registration flow. Revisit trigger: if provisioning
+annoys, add first-boot `SETUP_PASSWORD` (or `admin set-password`) persisting
+the hash to the bucket. Rules out: plaintext passwords in env/config.
+
 **2026-07-11 — Deploy compose is tool-agnostic: interpolation variables +
 named volumes, no env_file, no relative binds; password hash uses ':' not
 '$'.** Why: Portainer stacks have no working directory for `env_file:`/`./`
