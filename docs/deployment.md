@@ -111,6 +111,22 @@ location / {
 
 Verify from a phone browser: `https://sync.<your-domain>/healthz`.
 
+### TLS: internal CAs do NOT work on mobile
+
+Obsidian on Android trusts only the **system** CA store (Android 7+ apps
+ignore user-installed CAs unless they opt in, and Obsidian doesn't); iOS is
+similarly strict. A self-managed/internal CA certificate on the sync endpoint
+fails with `Trust anchor for certification path not found` — installing the
+root CA on the device does not help.
+
+Use a publicly trusted certificate instead. The internal-only pattern that
+works: real domain + split-horizon DNS (`sync.<domain>` → NAS LAN IP
+internally) + Let's Encrypt via **DNS-01** challenge, so no port ever opens
+to the internet. On Synology, `acme.sh` with your DNS provider's API and its
+`synology_dsm` deploy hook automates renewal; Caddy/Traefik/nginx do DNS-01
+natively. Fallback for testing: plain HTTP over VPN (`http://<nas-ip>:8080`)
+— REST works, though WebSocket push may not.
+
 ## 5. Install the plugin via BRAT
 
 On every device (desktop and mobile):
