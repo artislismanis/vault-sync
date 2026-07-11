@@ -26,33 +26,59 @@ private MinIO alongside the server and creates the bucket automatically.
 
 ## 2. Configure
 
-```sh
-ssh <user>@<nas-ip>
-mkdir -p /volume1/docker/vault-sync && cd /volume1/docker/vault-sync
-curl -LO https://raw.githubusercontent.com/artislismanis/vault-sync/main/deploy/docker-compose.yml
-curl -L -o .env https://raw.githubusercontent.com/artislismanis/vault-sync/main/deploy/.env.example
-vi .env    # fill in S3 settings (option A or B)
-```
+All configuration is compose **interpolation variables** (`${S3_ENDPOINT}` etc.
+in `deploy/docker-compose.yml`) — there is deliberately no `env_file:`, so the
+same compose file works with the docker CLI, Container Manager, and Portainer.
+The variables are listed in `deploy/.env.example`; the required ones are
+`S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `ACCOUNT_PASSWORD_HASH`
+(plus optional `S3_BUCKET`, `PUBLISH_PORT`, `LOG_LEVEL`).
 
-Generate the account password hash and paste it into `.env`:
+First generate the account password hash (any machine with docker):
 
 ```sh
 docker run --rm ghcr.io/artislismanis/vault-sync-server:latest \
   node dist/cli/admin.cjs hash-password '<your-account-password>'
 ```
 
-## 3. Start
+The output looks like `scrypt:16384:8:1:<base64>:<base64>` and is safe to put
+in env vars and `.env` files as-is.
+
+## 3. Start — pick ONE of these
+
+**Portainer (Stacks):**
+
+1. Stacks → Add stack → name `vault-sync`.
+2. Build method **Repository**: URL `https://github.com/artislismanis/vault-sync`,
+   compose path `deploy/docker-compose.yml` — or **Web editor**: paste the
+   file's contents.
+3. Under **Environment variables**, add the required variables (Advanced mode
+   lets you paste `KEY=value` lines straight from `.env.example`).
+4. Deploy. For bundled MinIO, add `COMPOSE_PROFILES=bundled-minio` as an
+   extra environment variable (Portainer doesn't expose compose profiles in
+   its UI).
+
+**docker compose over SSH:**
 
 ```sh
+ssh <user>@<nas-ip>
+mkdir -p /volume1/docker/vault-sync && cd /volume1/docker/vault-sync
+curl -LO https://raw.githubusercontent.com/artislismanis/vault-sync/main/deploy/docker-compose.yml
+curl -L -o .env https://raw.githubusercontent.com/artislismanis/vault-sync/main/deploy/.env.example
+vi .env                                         # fill in the variables
 docker compose up -d                            # path A (external S3)
 docker compose --profile bundled-minio up -d    # path B (bundled MinIO)
 docker compose logs -f vault-sync               # expect "Server listening"
 ```
 
-Alternatively use Container Manager → Project → create from the same folder.
+(`.env` caveat: docker compose interpolates unquoted values — single-quote
+any value containing `$`.)
+
+**Container Manager:** Project → Create → point at the same folder; set the
+variables in the project's environment settings when prompted.
 
 Verify on the LAN: `curl http://<nas-ip>:8080/healthz` → `{"ok":true,"s3":"ok"}`.
-If `s3` is `unreachable`, fix `S3_*` in `.env` and `docker compose up -d` again.
+If `s3` is `unreachable`, fix the `S3_*` variables and redeploy. The startup
+log warns explicitly if `ACCOUNT_PASSWORD_HASH` is missing or malformed.
 
 ## 4. HTTPS via reverse proxy
 
@@ -117,6 +143,6 @@ vault → enter passphrase → Unlock.
 - **Admin**: `docker compose exec vault-sync node dist/cli/admin.cjs vault-list`
   (also `rebuild-index`, `hash-password`).
 - **Backup**: the S3 bucket is the complete server state. Restore = restore
-  bucket → start container → `rebuild-index`. The `./data` volume is an
-  expendable cache.
+  bucket → start container → `rebuild-index`. The `vault-sync-data` volume is
+  an expendable cache.
 - **Logs**: `docker compose logs` (structured JSON to stdout).

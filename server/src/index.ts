@@ -9,6 +9,14 @@ async function main(): Promise<void> {
   const store = createObjectStore(config);
   const app = await buildApp({ config, db, store });
 
+  if (!config.ACCOUNT_PASSWORD_HASH) {
+    app.log.warn('ACCOUNT_PASSWORD_HASH not set — logins are disabled');
+  } else if (!config.ACCOUNT_PASSWORD_HASH.startsWith('scrypt:')) {
+    app.log.warn(
+      'ACCOUNT_PASSWORD_HASH looks malformed (expected "scrypt:...") — regenerate with the admin hash-password command',
+    );
+  }
+
   const shutdown = async () => {
     await app.close();
     db.close();

@@ -171,6 +171,15 @@ one-tap updates on mobile, single version stream keeps plugin/server pairing
 obvious. Rules out: community-plugin submission for now; private-repo BRAT
 tokens on every device.
 
+**2026-07-11 — Deploy compose is tool-agnostic: interpolation variables +
+named volumes, no env_file, no relative binds; password hash uses ':' not
+'$'.** Why: Portainer stacks have no working directory for `env_file:`/`./`
+paths (real failure on the owner's NAS: "env file /data/compose/24/.env not
+found"), while `${VAR}` interpolation is fed natively by the docker CLI
+(.env), Portainer's env-vars UI, and Container Manager alike; crypt-style
+`$`-separated hashes get mangled by compose interpolation. Rules out:
+env_file in deploy compose, `$` separators in any env-carried value.
+
 **2026-07-11 — Deploy compose ships an OPTIONAL bundled MinIO behind a
 compose profile; default is external S3.** `docker compose up -d` = server
 only, pointed at existing storage (the owner's case);

@@ -1,19 +1,37 @@
 # Vault Sync server deployment. See docs/deployment.md for the full
-# Synology NAS walkthrough.
+# Synology walkthrough (SSH, Container Manager, and Portainer variants).
+#
+# Configuration comes from compose interpolation variables, NOT env_file —
+# so it works identically with:
+#   - docker compose CLI:   .env file next to this compose file
+#   - Portainer:            stack "Environment variables" UI
+#   - Container Manager:    project environment settings
 #
 # Default:            docker compose up -d           (external S3 — your MinIO)
 # Self-contained:     docker compose --profile bundled-minio up -d
 #
-# The ./data volume holds only the rebuildable SQLite index; the S3 bucket is
-# the complete server state ("back up the bucket = full backup").
+# Volumes are named (no relative host paths — Portainer-safe). vault-sync-data
+# holds only the rebuildable SQLite index; the S3 bucket is the complete
+# server state ("back up the bucket = full backup").
 services:
   vault-sync:
     image: ghcr.io/artislismanis/vault-sync-server:latest
-    env_file: .env
+    environment:
+      PORT: 8080
+      HOST: 0.0.0.0
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATA_DIR: /data
+      S3_ENDPOINT: '${S3_ENDPOINT:?required — S3 endpoint URL (http//nas-ip9000)}'
+      S3_REGION: '${S3_REGION:-us-east-1}'
+      S3_ACCESS_KEY: '${S3_ACCESS_KEY:?required}'
+      S3_SECRET_KEY: '${S3_SECRET_KEY:?required}'
+      S3_BUCKET: '${S3_BUCKET:-vault-sync}'
+      # Generate with the admin hash-password command (see deploy/.env.example).
+      ACCOUNT_PASSWORD_HASH: '${ACCOUNT_PASSWORD_HASH:?required — see .env.example}'
     ports:
-      - '8080:8080'
+      - '${PUBLISH_PORT:-8080}:8080'
     volumes:
-      - ./data:/data
+      - vault-sync-data:/data
     restart: unless-stopped
     healthcheck:
       # Image has no curl/wget; node fetch does the job.
@@ -34,9 +52,11 @@ services:
     image: minio/minio
     profiles: [bundled-minio]
     command: server /data --console-address ":9001"
-    env_file: .env
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?}
     volumes:
-      - ./minio-data:/data
+      - minio-data:/data
     ports:
       - '9000:9000'
       - '9001:9001'
@@ -53,9 +73,12 @@ services:
     depends_on:
       minio:
         condition: service_healthy
-    env_file: .env
     entrypoint: >
       /bin/sh -c "
-      mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
-      mc mb --ignore-existing \"local/$$S3_BUCKET\"
+      mc alias set local http://minio:9000 '${S3_ACCESS_KEY:-}' '${S3_SECRET_KEY:-}' &&
+      mc mb --ignore-existing 'local/${S3_BUCKET:-vault-sync}'
       "
+
+volumes:
+  vault-sync-data:
+  minio-data:
