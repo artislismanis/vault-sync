@@ -6,7 +6,6 @@ import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app';
 import { loadConfig } from '../config';
 import { openDb, Db } from '../store/db';
-import type { ObjectStore } from '../store/s3';
 import { rebuildIndex } from '../store/metadata-log';
 import { hashPassword } from '../auth';
 import { memoryStore } from '../test-util/memory-store';
