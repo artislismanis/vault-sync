@@ -48,11 +48,26 @@ changes.
   client_device_id, client_mtime, server_receive_time.
   Revisions form a small DAG per item; concurrent parents indicate a conflict
   the client must resolve.
-- Blobs live in S3-compatible storage keyed by **revision id**
-  (`blobs/{vaultId}/{revisionId}`). No content addressing: random-nonce E2EE
-  makes ciphertext dedup worthless, and 1:1 blob↔revision keeps pruning
-  trivial (no refcounting/GC). Convergent encryption stays ruled out — it
-  leaks plaintext-equality.
+- Blobs live in S3-compatible storage keyed by **revision id**. No content
+  addressing: random-nonce E2EE makes ciphertext dedup worthless, and
+  blob↔revision keeps pruning trivial (prefix delete, no refcounting).
+  Convergent encryption stays ruled out — it leaks plaintext-equality.
+- **Blob format v2 (chunked, since 0.0.4):** content is encrypted with
+  libsodium `crypto_secretstream` (XChaCha20-Poly1305, ratcheting key) in
+  8 MiB plaintext chunks, each stored as its own object
+  (`blobs/{vaultId}/{revisionId}/{seq}`, zero-padded). The 24-byte stream
+  header rides in revision metadata (`streamHeaderB64`, not secret) with the
+  chunk count. AD binds every chunk to its revision id (no server-side
+  content splicing). The ratchet rejects reordered/omitted/replayed chunks;
+  the mandatory FINAL tag on the last chunk catches truncation — clients
+  hard-abort on any failure, never write partial content. Memory on both
+  ends is O(chunk) for crypto/transport; the client-side whole-file buffer
+  remains (Obsidian's vault API has no ranged reads), which is what the
+  selective-sync size cap guards. Upload order: all chunks PUT first, then
+  revision metadata — the server verifies the exact chunk key set before
+  accepting; stranded chunks from crashed uploads are collected by
+  `admin gc-blobs`. Pre-0.0.4 single-object blobs (v1, no `chunks` field)
+  remain readable.
 - Metadata persistence: **write-ahead sidecars + rebuildable SQLite index.**
   Every accepted write is first PUT to the bucket as an immutable JSON
   sidecar (`meta/vaults/{vaultId}.json`, `meta/{vaultId}/items/{itemId}.json`,
@@ -108,6 +123,11 @@ for cache misses. The cache itself is never synced.
 
 - Client-side filter before push: category toggles (image/audio/video/pdf/
   other) + size cap. Filtered files are simply never uploaded.
+- Size cap (implemented 0.0.4): `maxFileSizeMB` per device, default 100 MB on
+  mobile / unlimited on desktop. Oversized files (local or remote) are marked
+  excluded in the sync index — never pushed, pulled, or deleted. Raising the
+  cap re-includes them via the normal merge/conflict path. This is the mobile
+  OOM guard: a synced file must fit in webview memory at least once.
 - Glob ignore patterns: same mechanism; cheap if the filter layer is designed
   as a predicate chain — attempt in MVP, drop to phase 2 if it drags.
 - When a previously synced file becomes excluded: **stop updating** (matches

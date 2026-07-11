@@ -171,6 +171,29 @@ one-tap updates on mobile, single version stream keeps plugin/server pairing
 obvious. Rules out: community-plugin submission for now; private-repo BRAT
 tokens on every device.
 
+**2026-07-11 — Blob format v2: chunked crypto_secretstream, one S3 object per
+8 MiB chunk; whole-file AEAD retired for content.** Why: a 500 MB file OOM'd
+mobile — whole-buffer seal holds plaintext+ciphertext+wasm copies (~3×) and
+giant request bodies; chunking bounds crypto/transport at O(chunk) on both
+ends (server bodyLimit now 16 MB). Secretstream's ratchet + per-revision AD +
+mandatory FINAL tag give ordering, splice, and truncation protection.
+Per-chunk objects chosen over S3 multipart: no assembly lifecycle, pruning is
+a prefix delete, and clients can't use ranged GETs anyway (decryption is
+chunk-framed). Client-generated revision ids retained; stranded chunks from
+crashed uploads are swept by `admin gc-blobs`. Compat cliff accepted pre-1.0:
+the server rejects unchunked pushes (old plugins must upgrade); v1 blobs stay
+readable. Honest limit, documented: Obsidian's vault API is whole-file, so a
+synced file still costs ~1× its size in client memory — full streaming is
+impossible without Obsidian API changes.
+
+**2026-07-11 — Selective-sync size cap implemented as the mobile OOM guard:
+default 100 MB on mobile, unlimited on desktop, per-device setting.**
+Oversized files (either side) become `excluded` index entries — stop-updating
+semantics, never delete; raising the cap re-includes via the normal
+merge/conflict path. Why: chunking raises the ceiling but can't remove the
+whole-file floor (above); the cap is the designed answer for files beyond a
+device's memory, matching Obsidian Sync's size-cap behaviour.
+
 **2026-07-11 — Account credential stays a pre-provisioned env hash for now;
 first-boot setup deferred.** Owner reviewed the friction and chose to keep
 it: single user, no user DB, and the env carries only the scrypt hash (safe

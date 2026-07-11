@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app';
@@ -27,6 +28,11 @@ function memoryStore(): ObjectStore & { objects: Map<string, Uint8Array> } {
       if (!value) throw new Error(`no such key: ${key}`);
       return value;
     },
+    async getStream(key) {
+      const value = objects.get(key);
+      if (!value) throw new Error(`no such key: ${key}`);
+      return Readable.from(Buffer.from(value));
+    },
     async exists(key) {
       return objects.has(key);
     },
@@ -35,6 +41,12 @@ function memoryStore(): ObjectStore & { objects: Map<string, Uint8Array> } {
     },
     async list(prefix) {
       return [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    },
+    async listWithMeta(prefix) {
+      return [...objects.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .sort()
+        .map((key) => ({ key, lastModified: new Date() }));
     },
   };
 }
@@ -111,15 +123,26 @@ describe('sync routes', () => {
   const rev = (n: number) => `00000000-0000-4000-8000-00000000000${n}`;
   const HMAC = 'a'.repeat(64);
 
-  async function pushRevision(id: string, parentIds: string[], deleted = false) {
-    if (!deleted) {
-      const blob = await app.inject({
-        method: 'PUT',
-        url: `/vaults/${vaultId}/blobs/${id}`,
-        headers: { ...auth(), 'content-type': 'application/octet-stream' },
-        payload: Buffer.from(`ciphertext-${id}`),
-      });
-      expect(blob.statusCode).toBe(204);
+  async function putChunk(id: string, seq: number, payload = `ciphertext-${id}-${seq}`) {
+    return app.inject({
+      method: 'PUT',
+      url: `/vaults/${vaultId}/blobs/${id}/chunks/${seq}`,
+      headers: { ...auth(), 'content-type': 'application/octet-stream' },
+      payload: Buffer.from(payload),
+    });
+  }
+
+  async function pushRevision(
+    id: string,
+    parentIds: string[],
+    deleted = false,
+    options: { chunks?: number; skipUpload?: boolean } = {},
+  ) {
+    const chunks = options.chunks ?? 1;
+    if (!deleted && !options.skipUpload) {
+      for (let seq = 0; seq < chunks; seq++) {
+        expect((await putChunk(id, seq)).statusCode).toBe(204);
+      }
     }
     return app.inject({
       method: 'POST',
@@ -133,6 +156,7 @@ describe('sync routes', () => {
         sizeBytes: deleted ? 0 : 16,
         clientMtime: '2026-07-11T10:00:00.000Z',
         deleted,
+        ...(deleted ? {} : { chunks, streamHeaderB64: 'aGVhZGVy' }),
       },
     });
   }
@@ -146,13 +170,23 @@ describe('sync routes', () => {
     }[];
   }
 
-  it('rejects revision metadata when the blob was never uploaded', async () => {
-    const res = await app.inject({
+  it('rejects incomplete or malformed chunked pushes', async () => {
+    // Declared 2 chunks, uploaded 0.
+    const missing = await pushRevision(rev(9), [], false, { chunks: 2, skipUpload: true });
+    expect(missing.statusCode).toBe(400);
+    // Declared 1 chunk but uploaded 2 (stray key).
+    await putChunk(rev(9), 0);
+    await putChunk(rev(9), 1);
+    const stray = await pushRevision(rev(9), [], false, { chunks: 1, skipUpload: true });
+    expect(stray.statusCode).toBe(400);
+    expect(stray.json().error).toMatch(/stray/);
+    // Legacy (unchunked) non-deleted push is no longer accepted.
+    const legacy = await app.inject({
       method: 'POST',
       url: `/vaults/${vaultId}/revisions`,
       headers: auth(),
       payload: {
-        id: rev(9),
+        id: rev(8),
         pathHmac: HMAC,
         encryptedPathB64: 'cGF0aA==',
         parentIds: [],
@@ -161,11 +195,14 @@ describe('sync routes', () => {
         deleted: false,
       },
     });
-    expect(res.statusCode).toBe(400);
+    expect(legacy.statusCode).toBe(400);
+    expect(legacy.json().error).toMatch(/chunked upload required/);
   });
 
-  it('pushes revisions, advances the head, and serves the blob back', async () => {
-    expect((await pushRevision(rev(1), [])).statusCode).toBe(201);
+  it('pushes chunked revisions, advances the head, and serves chunks back', async () => {
+    const first = await pushRevision(rev(1), [], false, { chunks: 2 });
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({ chunks: 2, streamHeaderB64: 'aGVhZGVy' });
     let items = await heads();
     expect(items).toHaveLength(1);
     expect(items[0]!.heads.map((h) => h.id)).toEqual([rev(1)]);
@@ -174,13 +211,20 @@ describe('sync routes', () => {
     items = await heads();
     expect(items[0]!.heads.map((h) => h.id)).toEqual([rev(2)]);
 
-    const blob = await app.inject({
+    const chunk = await app.inject({
       method: 'GET',
-      url: `/vaults/${vaultId}/blobs/${rev(2)}`,
+      url: `/vaults/${vaultId}/blobs/${rev(1)}/chunks/1`,
       headers: auth(),
     });
-    expect(blob.statusCode).toBe(200);
-    expect(blob.rawPayload.toString()).toBe(`ciphertext-${rev(2)}`);
+    expect(chunk.statusCode).toBe(200);
+    expect(chunk.rawPayload.toString()).toBe(`ciphertext-${rev(1)}-1`);
+    // Out-of-range chunk 404s.
+    const outOfRange = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/blobs/${rev(2)}/chunks/1`,
+      headers: auth(),
+    });
+    expect(outOfRange.statusCode).toBe(404);
   });
 
   it('represents concurrent pushes as multiple heads, resolved by a merge revision', async () => {
@@ -199,8 +243,48 @@ describe('sync routes', () => {
     expect((await pushRevision(rev(5), [rev(4)], true)).statusCode).toBe(201);
     const items = await heads();
     expect(items[0]!.heads).toEqual([expect.objectContaining({ id: rev(5), deleted: true })]);
-    // Prior blobs still present — nothing was destroyed.
-    expect(store.objects.has(`blobs/${vaultId}/${rev(1)}`)).toBe(true);
+    // Prior chunk objects still present — nothing was destroyed.
+    expect(store.objects.has(`blobs/${vaultId}/${rev(1)}/00000`)).toBe(true);
+  });
+
+  it('serves legacy v1 blobs (pre-0.0.4 data) via the streamed whole-blob route', async () => {
+    // Seed a legacy revision directly (the API no longer creates them).
+    const legacyId = '00000000-0000-4000-8000-0000000000aa';
+    const { indexItem, indexRevision } = await import('../store/metadata-log');
+    const legacyItem = {
+      id: '00000000-0000-4000-8000-0000000000bb',
+      vaultId,
+      pathHmac: 'b'.repeat(64),
+      encryptedPathB64: 'bGVnYWN5',
+    };
+    indexItem(db, legacyItem);
+    indexRevision(db, {
+      id: legacyId,
+      vaultId,
+      itemId: legacyItem.id,
+      parentIds: [],
+      sizeBytes: 12,
+      deviceId: 'dev',
+      clientMtime: '2026-07-01T00:00:00.000Z',
+      serverReceivedAt: '2026-07-01T00:00:00.000Z',
+      deleted: false,
+    });
+    await store.put(`blobs/${vaultId}/${legacyId}`, 'legacy-bytes');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/blobs/${legacyId}`,
+      headers: auth(),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.rawPayload.toString()).toBe('legacy-bytes');
+    // Chunked revisions are not served by the legacy route.
+    const wrongRoute = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/blobs/${rev(1)}`,
+      headers: auth(),
+    });
+    expect(wrongRoute.statusCode).toBe(404);
   });
 
   it('rebuild-index reconstructs an identical view from the bucket alone', async () => {

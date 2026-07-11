@@ -3,10 +3,15 @@ import {
   VaultKeys,
   decryptContent,
   decryptPath,
-  encryptContent,
   encryptPath,
   pathHmac,
   ItemHeads,
+  Revision,
+  CHUNK_BYTES,
+  chunkCountFor,
+  createStreamDecryptor,
+  createStreamEncryptor,
+  StreamDecryptionError,
 } from '@vault-sync/shared';
 import type { RestClient } from '../transport/rest';
 import { IndexStore, isMergeableText, BASE_CACHE_MAX_BYTES } from './index-store';
@@ -17,8 +22,17 @@ import { threeWayMerge } from '../merge/diff3';
 // local operation goes through vault.trash (recoverable), every push cites
 // its parent (server history retains the prior version), and merge conflicts
 // always produce a conflict file — never a silent discard.
+//
+// Memory discipline (blob format v2): content moves in 8 MiB secretstream
+// chunks, so crypto + transport cost O(chunk). The whole-file plaintext
+// buffer itself is unavoidable — Obsidian's vault API has no ranged reads —
+// which is why the size cap exists.
 
 const MAX_PASSES = 3;
+const CHUNK_PUT_RETRIES = 3;
+
+const yieldMain = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface EngineOptions {
   vault: Vault;
@@ -27,7 +41,10 @@ export interface EngineOptions {
   vaultId: string;
   deviceName: string;
   index: IndexStore;
+  /** Selective-sync size cap in bytes; 0 = unlimited. */
+  maxFileSizeBytes: number;
   log: (message: string) => void;
+  notify: (message: string) => void;
 }
 
 export class SyncEngine {
@@ -35,6 +52,7 @@ export class SyncEngine {
   applyingRemote = false;
   private running = false;
   private queued = false;
+  private remoteHeadsByPath = new Map<string, ItemHeads>();
 
   constructor(private opts: EngineOptions) {}
 
@@ -76,7 +94,12 @@ export class SyncEngine {
   private async planOnce(): Promise<Action[]> {
     const local = this.scanLocal();
     const remote = await this.fetchRemote();
-    return planSync({ local, index: this.opts.index.all(), remote });
+    return planSync({
+      local,
+      index: this.opts.index.all(),
+      remote,
+      maxFileSizeBytes: this.opts.maxFileSizeBytes,
+    });
   }
 
   private scanLocal(): LocalFile[] {
@@ -89,8 +112,6 @@ export class SyncEngine {
     }));
   }
 
-  private remoteHeadsByPath = new Map<string, ItemHeads>();
-
   private async fetchRemote(): Promise<RemoteItem[]> {
     const response = await this.opts.rest.heads(this.opts.vaultId);
     this.remoteHeadsByPath.clear();
@@ -100,10 +121,20 @@ export class SyncEngine {
       this.remoteHeadsByPath.set(path, item);
       remote.push({
         path,
-        heads: item.heads.map((h) => ({ revisionId: h.id, deleted: h.deleted })),
+        heads: item.heads.map((h) => ({
+          revisionId: h.id,
+          deleted: h.deleted,
+          sizeBytes: h.sizeBytes,
+        })),
       });
     }
     return remote;
+  }
+
+  private findHead(path: string, revisionId: string): Revision {
+    const head = this.remoteHeadsByPath.get(path)?.heads.find((h) => h.id === revisionId);
+    if (!head) throw new Error(`head ${revisionId} for ${path} vanished mid-sync`);
+    return head;
   }
 
   private async execute(action: Action): Promise<void> {
@@ -120,30 +151,107 @@ export class SyncEngine {
         return this.merge(action.path, action.remoteRevisionId);
       case 'mergeHeads':
         return this.mergeHeads(action.path, action.headIds);
+      case 'exclude':
+        return this.exclude(action.path);
       case 'forgetIndex':
         this.opts.index.remove(action.path);
         return;
     }
   }
 
-  // --- push side ---------------------------------------------------------
+  // --- blob I/O (format v2 chunked; v1 legacy read) ------------------------
 
-  private async push(path: string, parentIds: string[]): Promise<void> {
-    const { vault, rest, keys, vaultId } = this.opts;
-    const file = vault.getFileByPath(path);
-    if (!file) return; // vanished between scan and execution; next pass handles it
-    const plaintext = new Uint8Array(await vault.readBinary(file));
+  /**
+   * Chunked upload: encrypt+PUT one 8 MiB chunk at a time, dropping each
+   * ciphertext once acknowledged. Retries re-send the SAME ciphertext — the
+   * secretstream ratchet must never run twice for one chunk.
+   */
+  private async uploadContent(
+    path: string,
+    plaintext: Uint8Array,
+    parentIds: string[],
+    clientMtime: string,
+  ): Promise<string> {
+    const { rest, keys, vaultId } = this.opts;
     const revisionId = crypto.randomUUID();
-    await rest.putBlob(vaultId, revisionId, encryptContent(keys, plaintext));
+    const encryptor = createStreamEncryptor(keys.contentKey, revisionId);
+    const chunks = chunkCountFor(plaintext.byteLength);
+
+    for (let seq = 0; seq < chunks; seq++) {
+      const slice = plaintext.subarray(seq * CHUNK_BYTES, (seq + 1) * CHUNK_BYTES);
+      // Loop-scoped so each ciphertext is collectible after its PUT succeeds.
+      const ciphertext = encryptor.pushChunk(slice, seq === chunks - 1);
+      let lastError: unknown;
+      let sent = false;
+      for (let attempt = 0; attempt < CHUNK_PUT_RETRIES && !sent; attempt++) {
+        try {
+          if (attempt > 0) await sleep(1000 * attempt);
+          await rest.putChunk(vaultId, revisionId, seq, ciphertext);
+          sent = true;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      if (!sent) throw lastError;
+      await yieldMain();
+    }
+
     await rest.postRevision(vaultId, {
       id: revisionId,
       pathHmac: pathHmac(keys.macKey, path),
       encryptedPathB64: encryptPath(keys, path),
       parentIds,
       sizeBytes: plaintext.byteLength,
-      clientMtime: new Date(file.stat.mtime).toISOString(),
+      clientMtime,
       deleted: false,
+      chunks,
+      streamHeaderB64: encryptor.headerB64,
     } as Parameters<RestClient['postRevision']>[1]);
+    return revisionId;
+  }
+
+  /** Format-dispatched download: v2 chunked (preallocated) or legacy v1. */
+  private async readBlob(revision: Revision): Promise<Uint8Array> {
+    const { rest, keys, vaultId } = this.opts;
+    if (revision.chunks == null || revision.streamHeaderB64 == null) {
+      return decryptContent(keys, await rest.getBlob(vaultId, revision.id));
+    }
+    const decryptor = createStreamDecryptor(keys.contentKey, revision.id, revision.streamHeaderB64);
+    // One exact-size buffer; each decrypted chunk is copied in and dropped.
+    const out = new Uint8Array(revision.sizeBytes);
+    let offset = 0;
+    for (let seq = 0; seq < revision.chunks; seq++) {
+      const ciphertext = await rest.getChunk(vaultId, revision.id, seq);
+      const { plaintext, final } = decryptor.pullChunk(ciphertext);
+      if (final !== (seq === revision.chunks - 1)) {
+        throw new StreamDecryptionError('stream length mismatch (truncated or extended)');
+      }
+      if (offset + plaintext.byteLength > out.byteLength) {
+        throw new StreamDecryptionError('content larger than declared size');
+      }
+      out.set(plaintext, offset);
+      offset += plaintext.byteLength;
+      await yieldMain();
+    }
+    if (offset !== out.byteLength) {
+      throw new StreamDecryptionError('content smaller than declared size');
+    }
+    return out;
+  }
+
+  // --- push side ---------------------------------------------------------
+
+  private async push(path: string, parentIds: string[]): Promise<void> {
+    const { vault } = this.opts;
+    const file = vault.getFileByPath(path);
+    if (!file) return; // vanished between scan and execution; next pass handles it
+    const plaintext = new Uint8Array(await vault.readBinary(file));
+    const revisionId = await this.uploadContent(
+      path,
+      plaintext,
+      parentIds,
+      new Date(file.stat.mtime).toISOString(),
+    );
     this.updateIndexAfterSync(path, file, plaintext, revisionId);
     this.opts.log(`pushed ${path}`);
   }
@@ -166,10 +274,7 @@ export class SyncEngine {
   // --- pull side ---------------------------------------------------------
 
   private async pull(path: string, revisionId: string): Promise<void> {
-    const plaintext = decryptContent(
-      this.opts.keys,
-      await this.opts.rest.getBlob(this.opts.vaultId, revisionId),
-    );
+    const plaintext = await this.readBlob(this.findHead(path, revisionId));
     const file = await this.writeLocal(path, plaintext);
     this.updateIndexAfterSync(path, file, plaintext, revisionId);
     this.opts.log(`pulled ${path}`);
@@ -190,35 +295,43 @@ export class SyncEngine {
     this.opts.log(`deleted ${path} (remote tombstone; local copy in .trash)`);
   }
 
+  private exclude(path: string): void {
+    const local = this.opts.vault.getFileByPath(path);
+    this.opts.index.set({
+      path,
+      mtime: local?.stat.mtime ?? 0,
+      size: local?.stat.size ?? 0,
+      lastSyncedRevisionId: null,
+      excluded: true,
+      basePlaintext: null,
+    });
+    const capMb = Math.round(this.opts.maxFileSizeBytes / (1024 * 1024));
+    this.opts.notify(`vault-sync: "${path}" exceeds the ${capMb} MB size cap — not synced`);
+    this.opts.log(`excluded ${path} (over size cap)`);
+  }
+
   // --- merge side --------------------------------------------------------
 
   private async merge(path: string, remoteRevisionId: string): Promise<void> {
-    const { vault, keys, rest, vaultId, index } = this.opts;
+    const { vault, index } = this.opts;
     const file = vault.getFileByPath(path);
     if (!file) return;
-    const remoteBytes = decryptContent(keys, await rest.getBlob(vaultId, remoteRevisionId));
+    const remoteBytes = await this.readBlob(this.findHead(path, remoteRevisionId));
     const base = index.get(path)?.basePlaintext;
 
     if (isMergeableText(path) && base != null) {
-      const localText = new TextDecoder().decode(
-        new Uint8Array(await vault.readBinary(file)),
-      );
+      const localText = new TextDecoder().decode(new Uint8Array(await vault.readBinary(file)));
       const remoteText = new TextDecoder().decode(remoteBytes);
       const result = threeWayMerge(base, localText, remoteText);
       if (result.ok) {
         const mergedBytes = new TextEncoder().encode(result.merged);
         await this.writeLocal(path, mergedBytes);
-        const revisionId = crypto.randomUUID();
-        await rest.putBlob(vaultId, revisionId, encryptContent(keys, mergedBytes));
-        await rest.postRevision(vaultId, {
-          id: revisionId,
-          pathHmac: pathHmac(keys.macKey, path),
-          encryptedPathB64: encryptPath(keys, path),
-          parentIds: [remoteRevisionId],
-          sizeBytes: mergedBytes.byteLength,
-          clientMtime: new Date().toISOString(),
-          deleted: false,
-        } as Parameters<RestClient['postRevision']>[1]);
+        const revisionId = await this.uploadContent(
+          path,
+          mergedBytes,
+          [remoteRevisionId],
+          new Date().toISOString(),
+        );
         const merged = vault.getFileByPath(path);
         this.updateIndexAfterSync(path, merged, mergedBytes, revisionId);
         this.opts.log(`merged ${path}`);
@@ -266,11 +379,11 @@ export class SyncEngine {
 
   /** Merge concurrent remote heads into one revision citing all of them. */
   private async mergeHeads(path: string, headIds: string[]): Promise<void> {
-    const { keys, rest, vaultId, index } = this.opts;
+    const { index } = this.opts;
     const base = index.get(path)?.basePlaintext;
     const texts: string[] = [];
     for (const id of headIds) {
-      texts.push(new TextDecoder().decode(decryptContent(keys, await rest.getBlob(vaultId, id))));
+      texts.push(new TextDecoder().decode(await this.readBlob(this.findHead(path, id))));
     }
 
     let merged: string | null = null;
@@ -289,17 +402,7 @@ export class SyncEngine {
     }
 
     const mergedBytes = new TextEncoder().encode(merged);
-    const revisionId = crypto.randomUUID();
-    await rest.putBlob(vaultId, revisionId, encryptContent(keys, mergedBytes));
-    await rest.postRevision(vaultId, {
-      id: revisionId,
-      pathHmac: pathHmac(keys.macKey, path),
-      encryptedPathB64: encryptPath(keys, path),
-      parentIds: headIds,
-      sizeBytes: mergedBytes.byteLength,
-      clientMtime: new Date().toISOString(),
-      deleted: false,
-    } as Parameters<RestClient['postRevision']>[1]);
+    const revisionId = await this.uploadContent(path, mergedBytes, headIds, new Date().toISOString());
     // Local file (and any local divergence) reconciles against the new single
     // head on the next pass.
     const file = await this.writeLocalIfUnchanged(path, mergedBytes);
@@ -316,10 +419,12 @@ export class SyncEngine {
     try {
       await this.ensureParentFolders(normalized);
       const existing = vault.getFileByPath(normalized);
-      const buffer = bytes.buffer.slice(
-        bytes.byteOffset,
-        bytes.byteOffset + bytes.byteLength,
-      ) as ArrayBuffer;
+      // Avoid a full copy when the view already spans its whole buffer
+      // (always true for readBlob output — this matters at 500 MB).
+      const spansBuffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
+      const buffer = spansBuffer
+        ? (bytes.buffer as ArrayBuffer)
+        : (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
       if (existing) {
         await vault.modifyBinary(existing, buffer);
         return existing;

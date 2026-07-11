@@ -4,6 +4,7 @@ export * from './crypto/aead';
 export * from './crypto/envelope';
 export * from './crypto/path-hmac';
 export * from './crypto/keys';
+export * from './crypto/stream';
 export * from './protocol/ids';
 export * from './protocol/rest';
 export * from './protocol/ws';

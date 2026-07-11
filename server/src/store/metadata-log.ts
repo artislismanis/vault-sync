@@ -37,6 +37,9 @@ export interface RevisionRecord {
   clientMtime: string;
   serverReceivedAt: string;
   deleted: boolean;
+  // Blob format v2 (absent = legacy v1 single blob).
+  chunks?: number;
+  streamHeaderB64?: string;
 }
 
 export function vaultMetaKey(vaultId: string): string {
@@ -51,8 +54,18 @@ export function revisionMetaKey(vaultId: string, revisionId: string): string {
   return `meta/${vaultId}/revisions/${revisionId}.json`;
 }
 
+/** Legacy v1: single object per revision. */
 export function blobKey(vaultId: string, revisionId: string): string {
   return `blobs/${vaultId}/${revisionId}`;
+}
+
+/** Blob format v2: one object per chunk. */
+export function chunkKey(vaultId: string, revisionId: string, seq: number): string {
+  return `${chunkPrefix(vaultId, revisionId)}${String(seq).padStart(5, '0')}`;
+}
+
+export function chunkPrefix(vaultId: string, revisionId: string): string {
+  return `blobs/${vaultId}/${revisionId}/`;
 }
 
 export async function writeVaultSidecar(store: ObjectStore, record: VaultRecord): Promise<void> {
@@ -88,12 +101,14 @@ export function indexItem(db: Db, record: ItemRecord): void {
 export function indexRevision(db: Db, record: RevisionRecord): void {
   db.prepare(
     `INSERT OR REPLACE INTO revision
-       (id, item_id, parent_ids_json, size_bytes, device_id, client_mtime, server_received_at, deleted)
-     VALUES (@id, @itemId, @parentIdsJson, @sizeBytes, @deviceId, @clientMtime, @serverReceivedAt, @deleted)`,
+       (id, item_id, parent_ids_json, size_bytes, device_id, client_mtime, server_received_at, deleted, chunks, stream_header_b64)
+     VALUES (@id, @itemId, @parentIdsJson, @sizeBytes, @deviceId, @clientMtime, @serverReceivedAt, @deleted, @chunks, @streamHeaderB64)`,
   ).run({
     ...record,
     parentIdsJson: JSON.stringify(record.parentIds),
     deleted: record.deleted ? 1 : 0,
+    chunks: record.chunks ?? null,
+    streamHeaderB64: record.streamHeaderB64 ?? null,
   });
   // item.deleted caches the head state for cheap listing.
   db.prepare('UPDATE item SET deleted = ? WHERE id = ?').run(

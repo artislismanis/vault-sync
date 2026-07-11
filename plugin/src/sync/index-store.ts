@@ -11,7 +11,9 @@ export interface IndexEntry {
   path: string;
   mtime: number;
   size: number;
-  lastSyncedRevisionId: string;
+  // null for entries that are excluded without ever having synced
+  // (e.g. oversized files hit by the size cap).
+  lastSyncedRevisionId: string | null;
   excluded: boolean;
   basePlaintext: string | null;
 }

@@ -10,6 +10,8 @@ import type { Db } from '../store/db';
 import type { ObjectStore } from '../store/s3';
 import {
   blobKey,
+  chunkKey,
+  chunkPrefix,
   indexItem,
   indexRevision,
   writeItemSidecar,
@@ -34,6 +36,8 @@ interface RevisionRow {
   client_mtime: string;
   server_received_at: string;
   deleted: number;
+  chunks: number | null;
+  stream_header_b64: string | null;
 }
 
 function toRevision(row: RevisionRow): Revision {
@@ -46,8 +50,12 @@ function toRevision(row: RevisionRow): Revision {
     clientMtime: row.client_mtime,
     serverReceivedAt: row.server_received_at,
     deleted: row.deleted === 1,
+    ...(row.chunks != null ? { chunks: row.chunks } : {}),
+    ...(row.stream_header_b64 != null ? { streamHeaderB64: row.stream_header_b64 } : {}),
   } as Revision;
 }
+
+const SEQ_PATTERN = /^\d{1,5}$/;
 
 export function registerSyncRoutes(
   app: FastifyInstance,
@@ -58,42 +66,68 @@ export function registerSyncRoutes(
   const vaultExists = (vaultId: string): boolean =>
     db.prepare('SELECT 1 FROM vault WHERE id = ?').get(vaultId) !== undefined;
 
-  // Raw ciphertext bodies for blob upload.
+  const findRevisionInVault = (vaultId: string, revisionId: string): RevisionRow | undefined =>
+    db
+      .prepare(
+        `SELECT r.* FROM revision r JOIN item i ON r.item_id = i.id
+         WHERE r.id = ? AND i.vault_id = ?`,
+      )
+      .get(revisionId, vaultId) as RevisionRow | undefined;
+
+  // Raw ciphertext bodies for chunk upload.
   app.addContentTypeParser(
     'application/octet-stream',
     { parseAs: 'buffer' },
     (_req, body, done) => done(null, body),
   );
 
-  app.put<{ Params: { vaultId: string; revisionId: string } }>(
-    '/vaults/:vaultId/blobs/:revisionId',
+  app.put<{ Params: { vaultId: string; revisionId: string; seq: string } }>(
+    '/vaults/:vaultId/blobs/:revisionId/chunks/:seq',
     async (request, reply) => {
-      const { vaultId, revisionId } = request.params;
+      const { vaultId, revisionId, seq } = request.params;
       if (!vaultExists(vaultId)) return reply.code(404).send({ error: 'unknown vault' });
+      if (!SEQ_PATTERN.test(seq)) return reply.code(400).send({ error: 'invalid chunk seq' });
       const body = request.body as Buffer | undefined;
       if (!Buffer.isBuffer(body)) {
         return reply.code(400).send({ error: 'expected application/octet-stream body' });
       }
-      // Idempotent: retrying a crashed upload overwrites identical ciphertext.
-      await store.put(blobKey(vaultId, revisionId), body);
+      // Idempotent: a retried chunk overwrites identical ciphertext.
+      await store.put(chunkKey(vaultId, revisionId, Number(seq)), body);
       return reply.code(204).send();
     },
   );
 
+  app.get<{ Params: { vaultId: string; revisionId: string; seq: string } }>(
+    '/vaults/:vaultId/blobs/:revisionId/chunks/:seq',
+    async (request, reply) => {
+      const { vaultId, revisionId, seq } = request.params;
+      if (!vaultExists(vaultId)) return reply.code(404).send({ error: 'unknown vault' });
+      if (!SEQ_PATTERN.test(seq)) return reply.code(400).send({ error: 'invalid chunk seq' });
+      const revision = findRevisionInVault(vaultId, revisionId);
+      if (!revision || revision.chunks == null || Number(seq) >= revision.chunks) {
+        return reply.code(404).send({ error: 'unknown chunk' });
+      }
+      const bytes = await store.get(chunkKey(vaultId, revisionId, Number(seq)));
+      return reply
+        .type('application/octet-stream')
+        .send(Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    },
+  );
+
+  // Legacy v1 whole-blob GET — pre-0.0.4 revisions only. Streams straight
+  // from the object store; never buffers the blob in server memory.
   app.get<{ Params: { vaultId: string; revisionId: string } }>(
     '/vaults/:vaultId/blobs/:revisionId',
     async (request, reply) => {
       const { vaultId, revisionId } = request.params;
       if (!vaultExists(vaultId)) return reply.code(404).send({ error: 'unknown vault' });
-      const revision = db
-        .prepare(
-          `SELECT r.id FROM revision r JOIN item i ON r.item_id = i.id
-           WHERE r.id = ? AND i.vault_id = ?`,
-        )
-        .get(revisionId, vaultId);
-      if (!revision) return reply.code(404).send({ error: 'unknown revision' });
-      const bytes = await store.get(blobKey(vaultId, revisionId));
-      return reply.type('application/octet-stream').send(Buffer.from(bytes));
+      const revision = findRevisionInVault(vaultId, revisionId);
+      if (!revision || revision.chunks != null) {
+        return reply.code(404).send({ error: 'unknown legacy blob' });
+      }
+      return reply
+        .type('application/octet-stream')
+        .send(await store.getStream(blobKey(vaultId, revisionId)));
     },
   );
 
@@ -107,9 +141,34 @@ export function registerSyncRoutes(
       if (db.prepare('SELECT 1 FROM revision WHERE id = ?').get(body.id)) {
         return reply.code(409).send({ error: 'revision id already exists' });
       }
-      // Blob must be durable before metadata is accepted (tombstones excepted).
-      if (!body.deleted && !(await store.exists(blobKey(vaultId, body.id)))) {
-        return reply.code(400).send({ error: 'blob not uploaded for revision' });
+
+      const chunked = body.chunks != null;
+      if (chunked !== (body.streamHeaderB64 != null)) {
+        return reply.code(400).send({ error: 'chunks and streamHeaderB64 must appear together' });
+      }
+      if (!body.deleted && !chunked) {
+        return reply
+          .code(400)
+          .send({ error: 'chunked upload required (legacy whole-blob push removed in 0.0.4)' });
+      }
+      if (body.deleted && chunked) {
+        return reply.code(400).send({ error: 'tombstones carry no content' });
+      }
+
+      if (chunked) {
+        // All chunks must be durable, and exactly the declared set — gaps or
+        // stray keys reject the revision.
+        const keys = new Set(await store.list(chunkPrefix(vaultId, body.id)));
+        const expected = new Set(
+          Array.from({ length: body.chunks! }, (_, i) => chunkKey(vaultId, body.id, i)),
+        );
+        const missing = [...expected].some((k) => !keys.has(k));
+        const stray = [...keys].some((k) => !expected.has(k));
+        if (missing || stray) {
+          return reply.code(400).send({
+            error: `chunk set mismatch: expected ${body.chunks}, found ${keys.size}${stray ? ' (stray keys)' : ''}`,
+          });
+        }
       }
 
       let item = db
@@ -141,6 +200,7 @@ export function registerSyncRoutes(
         clientMtime: body.clientMtime,
         serverReceivedAt: new Date().toISOString(),
         deleted: body.deleted,
+        ...(chunked ? { chunks: body.chunks, streamHeaderB64: body.streamHeaderB64 } : {}),
       };
       // Write-ahead: sidecar first, index second, notify+ack last. The server
       // NEVER rejects on conflict — concurrent heads live in the DAG.

@@ -18,9 +18,9 @@ export interface AppDeps {
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: { level: deps.config.LOG_LEVEL },
-    // Whole-file sync: cap request bodies well above the plugin's default
-    // selective-sync size cap. Revisit with chunked upload (phase 2).
-    bodyLimit: 256 * 1024 * 1024,
+    // Blob format v2 uploads arrive as ≤8 MiB chunks; 16 MB gives headroom
+    // and bounds per-request server memory.
+    bodyLimit: 16 * 1024 * 1024,
   });
   await app.register(websocket);
 

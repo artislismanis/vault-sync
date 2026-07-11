@@ -46,6 +46,13 @@ export const listVaultsResponseSchema = z.object({
   vaults: z.array(vaultSummarySchema),
 });
 
+// Blob format v2 fields: present together (chunked secretstream) or absent
+// together (legacy v1 single blob, pre-0.0.4 data only).
+const chunkFields = {
+  chunks: z.number().int().min(1).max(100_000).optional(),
+  streamHeaderB64: z.string().optional(),
+};
+
 export const revisionSchema = z.object({
   id: revisionIdSchema,
   itemId: itemIdSchema,
@@ -55,6 +62,7 @@ export const revisionSchema = z.object({
   clientMtime: z.iso.datetime(),
   serverReceivedAt: z.iso.datetime(),
   deleted: z.boolean(),
+  ...chunkFields,
 });
 
 // Push: client generates the revision id, uploads the blob FIRST
@@ -69,6 +77,7 @@ export const pushRevisionRequestSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
   clientMtime: z.iso.datetime(),
   deleted: z.boolean(),
+  ...chunkFields,
 });
 
 export const itemHeadsSchema = z.object({

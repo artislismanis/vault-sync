@@ -107,14 +107,25 @@ export class RestClient {
     );
   }
 
-  async putBlob(vaultId: string, revisionId: string, ciphertext: Uint8Array): Promise<void> {
+  async putChunk(
+    vaultId: string,
+    revisionId: string,
+    seq: number,
+    ciphertext: Uint8Array,
+  ): Promise<void> {
     await this.request({
-      path: `/vaults/${vaultId}/blobs/${revisionId}`,
+      path: `/vaults/${vaultId}/blobs/${revisionId}/chunks/${seq}`,
       method: 'PUT',
       binary: ciphertext,
     });
   }
 
+  async getChunk(vaultId: string, revisionId: string, seq: number): Promise<Uint8Array> {
+    const res = await this.request({ path: `/vaults/${vaultId}/blobs/${revisionId}/chunks/${seq}` });
+    return new Uint8Array(res.arrayBuffer);
+  }
+
+  /** Legacy v1 whole-blob read — pre-0.0.4 revisions only. */
   async getBlob(vaultId: string, revisionId: string): Promise<Uint8Array> {
     const res = await this.request({ path: `/vaults/${vaultId}/blobs/${revisionId}` });
     return new Uint8Array(res.arrayBuffer);

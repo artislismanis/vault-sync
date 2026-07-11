@@ -57,7 +57,9 @@ export default class VaultSyncPlugin extends Plugin {
       vaultId,
       deviceName,
       index,
+      maxFileSizeBytes: this.settings.maxFileSizeMB * 1024 * 1024,
       log: (message) => console.log(`[vault-sync] ${message}`),
+      notify: (message) => new Notice(message),
     });
 
     // Local change sources: vault events (debounced)…

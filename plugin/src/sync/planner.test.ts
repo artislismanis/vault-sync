@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planSync, PlanInput } from './planner';
+import { planSync, PlanInput, RemoteHead } from './planner';
 import type { IndexEntry } from './index-store';
 
 const entry = (overrides: Partial<IndexEntry> & { path: string }): IndexEntry => ({
@@ -8,6 +8,12 @@ const entry = (overrides: Partial<IndexEntry> & { path: string }): IndexEntry =>
   lastSyncedRevisionId: 'rev-a',
   excluded: false,
   basePlaintext: null,
+  ...overrides,
+});
+
+const head = (overrides: Partial<RemoteHead> & { revisionId: string }): RemoteHead => ({
+  deleted: false,
+  sizeBytes: 10,
   ...overrides,
 });
 
@@ -20,7 +26,7 @@ describe('planSync', () => {
       plan({
         local: [{ path: 'a.md', mtime: 1000, size: 10 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-a', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-a' })] }],
       }),
     ).toEqual([]);
   });
@@ -36,20 +42,20 @@ describe('planSync', () => {
       plan({
         local: [{ path: 'a.md', mtime: 2000, size: 12 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-a', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-a' })] }],
       }),
     ).toEqual([{ kind: 'push', path: 'a.md', parentIds: ['rev-a'] }]);
   });
 
   it('pulls remote-only files and remote advances', () => {
-    expect(
-      plan({ remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: false }] }] }),
-    ).toEqual([{ kind: 'pull', path: 'a.md', revisionId: 'rev-b' }]);
+    expect(plan({ remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b' })] }] })).toEqual([
+      { kind: 'pull', path: 'a.md', revisionId: 'rev-b' },
+    ]);
     expect(
       plan({
         local: [{ path: 'a.md', mtime: 1000, size: 10 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b' })] }],
       }),
     ).toEqual([{ kind: 'pull', path: 'a.md', revisionId: 'rev-b' }]);
   });
@@ -58,7 +64,7 @@ describe('planSync', () => {
     expect(
       plan({
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-a', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-a' })] }],
       }),
     ).toEqual([{ kind: 'pushDelete', path: 'a.md', parentIds: ['rev-a'] }]);
   });
@@ -68,25 +74,23 @@ describe('planSync', () => {
       plan({
         local: [{ path: 'a.md', mtime: 1000, size: 10 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: true }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b', deleted: true })] }],
       }),
     ).toEqual([{ kind: 'deleteLocal', path: 'a.md', tombstoneId: 'rev-b' }]);
   });
 
   it('edit wins over delete in both directions', () => {
-    // Local edit vs remote delete → push resurrects.
     expect(
       plan({
         local: [{ path: 'a.md', mtime: 2000, size: 12 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: true }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b', deleted: true })] }],
       }),
     ).toEqual([{ kind: 'push', path: 'a.md', parentIds: ['rev-b'] }]);
-    // Local delete vs remote edit → pull restores.
     expect(
       plan({
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b' })] }],
       }),
     ).toEqual([{ kind: 'pull', path: 'a.md', revisionId: 'rev-b' }]);
   });
@@ -96,7 +100,7 @@ describe('planSync', () => {
       plan({
         local: [{ path: 'a.md', mtime: 2000, size: 12 }],
         index: [entry({ path: 'a.md' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: false }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b' })] }],
       }),
     ).toEqual([{ kind: 'merge', path: 'a.md', remoteRevisionId: 'rev-b' }]);
   });
@@ -109,10 +113,7 @@ describe('planSync', () => {
         remote: [
           {
             path: 'a.md',
-            heads: [
-              { revisionId: 'rev-b', deleted: false },
-              { revisionId: 'rev-c', deleted: false },
-            ],
+            heads: [head({ revisionId: 'rev-b' }), head({ revisionId: 'rev-c' })],
           },
         ],
       }),
@@ -126,18 +127,78 @@ describe('planSync', () => {
     expect(
       plan({
         index: [entry({ path: 'a.md', lastSyncedRevisionId: 'rev-b' })],
-        remote: [{ path: 'a.md', heads: [{ revisionId: 'rev-b', deleted: true }] }],
+        remote: [{ path: 'a.md', heads: [head({ revisionId: 'rev-b', deleted: true })] }],
       }),
     ).toEqual([{ kind: 'forgetIndex', path: 'a.md' }]);
   });
 
-  it('never touches excluded entries', () => {
-    expect(
-      plan({
-        local: [{ path: 'big.pdf', mtime: 9999, size: 999 }],
-        index: [entry({ path: 'big.pdf', excluded: true })],
-        remote: [{ path: 'big.pdf', heads: [{ revisionId: 'rev-z', deleted: false }] }],
-      }),
-    ).toEqual([]);
+  describe('size cap', () => {
+    const CAP = 100;
+
+    it('excludes oversized local files instead of pushing', () => {
+      expect(
+        plan({
+          local: [{ path: 'video.mp4', mtime: 1, size: 500 }],
+          maxFileSizeBytes: CAP,
+        }),
+      ).toEqual([{ kind: 'exclude', path: 'video.mp4' }]);
+    });
+
+    it('excludes oversized remote-only files instead of pulling', () => {
+      expect(
+        plan({
+          remote: [{ path: 'video.mp4', heads: [head({ revisionId: 'rev-z', sizeBytes: 500 })] }],
+          maxFileSizeBytes: CAP,
+        }),
+      ).toEqual([{ kind: 'exclude', path: 'video.mp4' }]);
+    });
+
+    it('leaves excluded entries alone while still over the cap', () => {
+      expect(
+        plan({
+          local: [{ path: 'video.mp4', mtime: 9, size: 500 }],
+          index: [entry({ path: 'video.mp4', excluded: true, lastSyncedRevisionId: null })],
+          remote: [{ path: 'video.mp4', heads: [head({ revisionId: 'rev-z', sizeBytes: 500 })] }],
+          maxFileSizeBytes: CAP,
+        }),
+      ).toEqual([]);
+    });
+
+    it('re-includes when the cap no longer applies (rejoins via normal path)', () => {
+      const excluded = entry({ path: 'video.mp4', excluded: true, lastSyncedRevisionId: null });
+      // Cap raised above the file size.
+      expect(
+        plan({
+          local: [{ path: 'video.mp4', mtime: 9, size: 500 }],
+          index: [excluded],
+          maxFileSizeBytes: 1000,
+        }),
+      ).toEqual([{ kind: 'forgetIndex', path: 'video.mp4' }]);
+      // Cap removed entirely.
+      expect(
+        plan({
+          local: [{ path: 'video.mp4', mtime: 9, size: 500 }],
+          index: [excluded],
+          maxFileSizeBytes: 0,
+        }),
+      ).toEqual([{ kind: 'forgetIndex', path: 'video.mp4' }]);
+    });
+
+    it('ignores the cap for tombstone heads and unlimited (0) settings', () => {
+      expect(
+        plan({
+          remote: [
+            { path: 'gone.mp4', heads: [head({ revisionId: 'rev-t', deleted: true, sizeBytes: 500 })] },
+          ],
+          maxFileSizeBytes: CAP,
+        }),
+      ).toEqual([]);
+      expect(
+        plan({
+          local: [{ path: 'video.mp4', mtime: 1, size: 500 }],
+          maxFileSizeBytes: 0,
+        }),
+      ).toEqual([{ kind: 'push', path: 'video.mp4', parentIds: [] }]);
+    });
   });
 });

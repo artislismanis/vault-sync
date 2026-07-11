@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, Platform, PluginSettingTab, Setting } from 'obsidian';
 import {
   createEnvelope,
   decryptVaultName,
@@ -24,6 +24,11 @@ export interface VaultSyncSettings {
   // persisted. The device already holds the vault in plaintext, so local VMK
   // storage is not a weakening (docs/decisions.md).
   vmkB64: string | null;
+  // Selective-sync size cap; 0 = unlimited. Files above it stop syncing on
+  // this device (never deleted anywhere). The mobile default is the OOM
+  // guard: Obsidian's file API is whole-file, so a file must fit in webview
+  // memory at least once.
+  maxFileSizeMB: number;
 }
 
 export const DEFAULT_SETTINGS: VaultSyncSettings = {
@@ -33,6 +38,7 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
   deviceId: null,
   vaultId: null,
   vmkB64: null,
+  maxFileSizeMB: Platform.isMobile ? 100 : 0,
 };
 
 export class VaultSyncSettingTab extends PluginSettingTab {
@@ -71,6 +77,22 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         text.setValue(settings.deviceName).onChange(async (value) => {
           settings.deviceName = value.trim() || 'my-device';
           await this.plugin.saveSettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName('Max synced file size (MB)')
+      .setDesc(
+        'Files larger than this stop syncing on this device (never deleted). 0 = unlimited. ' +
+          'Large files must fit in memory during sync — keep a cap on mobile.',
+      )
+      .addText((text) =>
+        text.setValue(String(settings.maxFileSizeMB)).onChange(async (value) => {
+          const parsed = Number(value);
+          if (Number.isFinite(parsed) && parsed >= 0) {
+            settings.maxFileSizeMB = Math.floor(parsed);
+            await this.plugin.saveSettings();
+          }
         }),
       );
 

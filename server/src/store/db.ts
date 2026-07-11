@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 // rebuildable at any time via `admin rebuild-index`. Never the source of
 // truth (docs/decisions.md); losing this file must lose nothing.
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS vault (
@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS revision (
   device_id     TEXT NOT NULL,
   client_mtime  TEXT NOT NULL,
   server_received_at TEXT NOT NULL,
-  deleted       INTEGER NOT NULL DEFAULT 0
+  deleted       INTEGER NOT NULL DEFAULT 0,
+  chunks        INTEGER,
+  stream_header_b64 TEXT
 );
 CREATE INDEX IF NOT EXISTS revision_item ON revision(item_id);
 CREATE TABLE IF NOT EXISTS device (
@@ -52,8 +54,14 @@ export function openDb(dataDir: string): Db {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   const version = db.pragma('user_version', { simple: true }) as number;
-  if (version < SCHEMA_VERSION) {
+  if (version < 1) {
     db.exec(SCHEMA);
+  } else if (version < 2) {
+    // v2: blob format v2 metadata (chunk count + secretstream header).
+    db.exec('ALTER TABLE revision ADD COLUMN chunks INTEGER;');
+    db.exec('ALTER TABLE revision ADD COLUMN stream_header_b64 TEXT;');
+  }
+  if (version < SCHEMA_VERSION) {
     db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }
   return db;

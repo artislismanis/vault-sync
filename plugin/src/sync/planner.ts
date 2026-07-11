@@ -18,6 +18,7 @@ export interface LocalFile {
 export interface RemoteHead {
   revisionId: string;
   deleted: boolean;
+  sizeBytes: number;
 }
 
 export interface RemoteItem {
@@ -32,18 +33,22 @@ export type Action =
   | { kind: 'deleteLocal'; path: string; tombstoneId: string }
   | { kind: 'merge'; path: string; remoteRevisionId: string }
   | { kind: 'mergeHeads'; path: string; headIds: string[] }
+  | { kind: 'exclude'; path: string } // over the size cap: stop syncing, never a delete
   | { kind: 'forgetIndex'; path: string };
 
 export interface PlanInput {
   local: LocalFile[];
   index: IndexEntry[];
   remote: RemoteItem[];
+  /** Selective-sync size cap in bytes; 0 or absent = unlimited. */
+  maxFileSizeBytes?: number;
 }
 
 export function planSync(input: PlanInput): Action[] {
   const localByPath = new Map(input.local.map((f) => [f.path, f]));
   const indexByPath = new Map(input.index.map((e) => [e.path, e]));
   const remoteByPath = new Map(input.remote.map((r) => [r.path, r]));
+  const cap = input.maxFileSizeBytes ?? 0;
 
   const paths = new Set<string>([
     ...localByPath.keys(),
@@ -57,7 +62,22 @@ export function planSync(input: PlanInput): Action[] {
     const idx = indexByPath.get(path);
     const heads = remoteByPath.get(path)?.heads ?? [];
 
-    if (idx?.excluded) continue; // selective sync: divergence is expected, not a change
+    const overCap =
+      cap > 0 &&
+      ((local !== undefined && local.size > cap) ||
+        heads.some((h) => !h.deleted && h.sizeBytes > cap));
+
+    if (idx?.excluded) {
+      // Selective sync: divergence is expected while excluded. Re-inclusion
+      // (cap raised/file shrank) drops the entry so the file rejoins through
+      // the normal new-file/merge/conflict path on the next pass.
+      if (!overCap) actions.push({ kind: 'forgetIndex', path });
+      continue;
+    }
+    if (overCap) {
+      actions.push({ kind: 'exclude', path });
+      continue;
+    }
 
     // Concurrent remote heads: merge them first; local edits (if any) are
     // reconciled on the follow-up pass once a single head exists.
