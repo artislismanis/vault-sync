@@ -15,7 +15,9 @@
 # server state ("back up the bucket = full backup").
 services:
   vault-sync:
-    image: ghcr.io/artislismanis/vault-sync-server:latest
+    # Pin VAULT_SYNC_VERSION to a release (e.g. 0.0.4) so upgrades are
+    # explicit — Docker does NOT re-pull a cached :latest on redeploy.
+    image: ghcr.io/artislismanis/vault-sync-server:${VAULT_SYNC_VERSION:-latest}
     environment:
       PORT: 8080
       HOST: 0.0.0.0
