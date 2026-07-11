@@ -5,9 +5,12 @@ vaults. A TypeScript sync server (Docker, S3-compatible storage) plus an
 Obsidian plugin for desktop and mobile — aiming for rough feature parity with
 Obsidian Sync, under your own control.
 
-**Status: pre-alpha.** Core sync works (E2EE push/pull, three-way merge,
-conflict files, version history on the server, delete propagation); expect
-rough edges. Not yet in the community plugin directory.
+**Status: alpha.** Working: E2EE sync (desktop + mobile), three-way merge
+with conflict files, delete propagation, chunked + resumable large-file
+transfers, parallel transfers, selective sync (size cap + file-type
+toggles), version history with restore, sync activity log, WebSocket push
+with polling fallback. Not yet in the community plugin directory — install
+via BRAT.
 
 ## Security model
 

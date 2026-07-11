@@ -20,6 +20,10 @@ export class ChangeChannel {
     private onNotification: (message: ChangeNotification) => void,
   ) {}
 
+  isConnected(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
+
   connect(): void {
     this.closedByUs = false;
     const wsUrl =

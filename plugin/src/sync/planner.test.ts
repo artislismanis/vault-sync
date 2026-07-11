@@ -141,7 +141,7 @@ describe('planSync', () => {
           local: [{ path: 'video.mp4', mtime: 1, size: 500 }],
           maxFileSizeBytes: CAP,
         }),
-      ).toEqual([{ kind: 'exclude', path: 'video.mp4' }]);
+      ).toEqual([{ kind: 'exclude', path: 'video.mp4', reason: 'size' }]);
     });
 
     it('excludes oversized remote-only files instead of pulling', () => {
@@ -150,7 +150,7 @@ describe('planSync', () => {
           remote: [{ path: 'video.mp4', heads: [head({ revisionId: 'rev-z', sizeBytes: 500 })] }],
           maxFileSizeBytes: CAP,
         }),
-      ).toEqual([{ kind: 'exclude', path: 'video.mp4' }]);
+      ).toEqual([{ kind: 'exclude', path: 'video.mp4', reason: 'size' }]);
     });
 
     it('leaves excluded entries alone while still over the cap', () => {
@@ -182,6 +182,38 @@ describe('planSync', () => {
           maxFileSizeBytes: 0,
         }),
       ).toEqual([{ kind: 'forgetIndex', path: 'video.mp4' }]);
+    });
+
+    it('excludes by category, re-includes when the toggle returns', () => {
+      const noVideo = (p: string) => p.endsWith('.mp4');
+      expect(
+        plan({
+          local: [{ path: 'clip.mp4', mtime: 1, size: 5 }],
+          isCategoryExcluded: noVideo,
+        }),
+      ).toEqual([{ kind: 'exclude', path: 'clip.mp4', reason: 'category' }]);
+      // Remote-only excluded category is never pulled.
+      expect(
+        plan({
+          remote: [{ path: 'clip.mp4', heads: [head({ revisionId: 'rev-v' })] }],
+          isCategoryExcluded: noVideo,
+        }),
+      ).toEqual([{ kind: 'exclude', path: 'clip.mp4', reason: 'category' }]);
+      // Toggle re-enabled → rejoins via forgetIndex.
+      expect(
+        plan({
+          local: [{ path: 'clip.mp4', mtime: 1, size: 5 }],
+          index: [entry({ path: 'clip.mp4', excluded: true, lastSyncedRevisionId: null })],
+          isCategoryExcluded: () => false,
+        }),
+      ).toEqual([{ kind: 'forgetIndex', path: 'clip.mp4' }]);
+      // Notes are unaffected by the filter.
+      expect(
+        plan({
+          local: [{ path: 'a.md', mtime: 1, size: 5 }],
+          isCategoryExcluded: noVideo,
+        }),
+      ).toEqual([{ kind: 'push', path: 'a.md', parentIds: [] }]);
     });
 
     it('ignores the cap for tombstone heads and unlimited (0) settings', () => {

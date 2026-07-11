@@ -33,7 +33,7 @@ export type Action =
   | { kind: 'deleteLocal'; path: string; tombstoneId: string }
   | { kind: 'merge'; path: string; remoteRevisionId: string }
   | { kind: 'mergeHeads'; path: string; headIds: string[] }
-  | { kind: 'exclude'; path: string } // over the size cap: stop syncing, never a delete
+  | { kind: 'exclude'; path: string; reason: 'size' | 'category' } // stop syncing, never a delete
   | { kind: 'forgetIndex'; path: string };
 
 export interface PlanInput {
@@ -42,6 +42,8 @@ export interface PlanInput {
   remote: RemoteItem[];
   /** Selective-sync size cap in bytes; 0 or absent = unlimited. */
   maxFileSizeBytes?: number;
+  /** Selective-sync category filter; absent = everything syncs. */
+  isCategoryExcluded?: (path: string) => boolean;
 }
 
 export function planSync(input: PlanInput): Action[] {
@@ -66,16 +68,18 @@ export function planSync(input: PlanInput): Action[] {
       cap > 0 &&
       ((local !== undefined && local.size > cap) ||
         heads.some((h) => !h.deleted && h.sizeBytes > cap));
+    const categoryExcluded = input.isCategoryExcluded?.(path) ?? false;
+    const excludedByPolicy = overCap || categoryExcluded;
 
     if (idx?.excluded) {
       // Selective sync: divergence is expected while excluded. Re-inclusion
-      // (cap raised/file shrank) drops the entry so the file rejoins through
-      // the normal new-file/merge/conflict path on the next pass.
-      if (!overCap) actions.push({ kind: 'forgetIndex', path });
+      // (cap raised / category re-enabled) drops the entry so the file
+      // rejoins through the normal new-file/merge/conflict path next pass.
+      if (!excludedByPolicy) actions.push({ kind: 'forgetIndex', path });
       continue;
     }
-    if (overCap) {
-      actions.push({ kind: 'exclude', path });
+    if (excludedByPolicy) {
+      actions.push({ kind: 'exclude', path, reason: overCap ? 'size' : 'category' });
       continue;
     }
 

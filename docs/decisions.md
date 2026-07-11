@@ -194,6 +194,26 @@ merge/conflict path. Why: chunking raises the ceiling but can't remove the
 whole-file floor (above); the cap is the designed answer for files beyond a
 device's memory, matching Obsidian Sync's size-cap behaviour.
 
+**2026-07-11 — Version history restore = write old content locally, push as
+a new revision citing the current head.** Never a server-side rewrite: the
+pre-restore state remains one step back in the DAG, so restore is itself
+undoable (hard rule 4 applied to history). Tombstoned revisions are listed
+but not directly restorable — restore any earlier content revision instead.
+History UI: file menu + command → modal (date, size, device, restore).
+
+**2026-07-11 — Mobile reliability: sync on visibilitychange (foreground) and
+60 s polling fallback whenever the WebSocket is down.** WS remains the
+latency path; polling guarantees convergence behind proxies/VPNs that break
+WS. Both piggyback on the debounced single-flight engine, so overlapping
+triggers coalesce.
+
+**2026-07-11 — Selective sync category toggles (image/audio/video/pdf/other)
+reuse the size-cap exclusion machinery; notes are never excludable.**
+Client-side stop-updating semantics, identical to the size cap: disabling a
+category never deletes anything anywhere; re-enabling rejoins files through
+the normal merge/conflict path. Category exclusions log without toasts (a
+chosen setting isn't a surprise); size exclusions still notify.
+
 **2026-07-11 — Resumable large downloads via a ciphertext spool; parallel
 transfers with a single-large-transfer rule.** Downloads >32 MB spool
 ciphertext chunks to the plugin dir as they arrive: an interrupted pull

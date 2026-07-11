@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   pushRevisionRequestSchema,
   HeadsResponse,
+  HistoryResponse,
   ItemHeads,
   Revision,
 } from '@vault-sync/shared';
@@ -215,6 +216,22 @@ export function registerSyncRoutes(
 
       const row = db.prepare('SELECT * FROM revision WHERE id = ?').get(record.id) as RevisionRow;
       return reply.code(201).send(toRevision(row));
+    },
+  );
+
+  app.get<{ Params: { vaultId: string; pathHmac: string } }>(
+    '/vaults/:vaultId/items/:pathHmac/history',
+    async (request, reply): Promise<HistoryResponse> => {
+      const { vaultId, pathHmac } = request.params;
+      if (!vaultExists(vaultId)) return reply.code(404).send({ error: 'unknown vault' }) as never;
+      const item = db
+        .prepare('SELECT id FROM item WHERE vault_id = ? AND path_hmac = ?')
+        .get(vaultId, pathHmac) as { id: string } | undefined;
+      if (!item) return reply.code(404).send({ error: 'unknown item' }) as never;
+      const rows = db
+        .prepare('SELECT * FROM revision WHERE item_id = ? ORDER BY server_received_at DESC')
+        .all(item.id) as RevisionRow[];
+      return { itemId: item.id, revisions: rows.map(toRevision) } as HistoryResponse;
     },
   );
 

@@ -94,6 +94,14 @@ export const headsResponseSchema = z.object({
   items: z.array(itemHeadsSchema),
 });
 
+// Full per-item history (newest first), for the plugin's version-history UI.
+// Restore is client-side: fetch an old revision's blob, write it locally,
+// push as a NEW revision citing the current head — history never rewrites.
+export const historyResponseSchema = z.object({
+  itemId: itemIdSchema,
+  revisions: z.array(revisionSchema).min(1),
+});
+
 export type KdfParams = z.infer<typeof kdfParamsSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
@@ -105,3 +113,4 @@ export type Revision = z.infer<typeof revisionSchema>;
 export type PushRevisionRequest = z.infer<typeof pushRevisionRequestSchema>;
 export type ItemHeads = z.infer<typeof itemHeadsSchema>;
 export type HeadsResponse = z.infer<typeof headsResponseSchema>;
+export type HistoryResponse = z.infer<typeof historyResponseSchema>;

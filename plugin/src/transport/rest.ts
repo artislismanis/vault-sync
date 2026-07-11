@@ -3,6 +3,8 @@ import {
   CreateVaultRequest,
   HeadsResponse,
   headsResponseSchema,
+  HistoryResponse,
+  historyResponseSchema,
   HealthResponse,
   healthResponseSchema,
   ListVaultsResponse,
@@ -104,6 +106,12 @@ export class RestClient {
   async heads(vaultId: string): Promise<HeadsResponse> {
     return headsResponseSchema.parse(
       (await this.request({ path: `/vaults/${vaultId}/heads` })).json,
+    );
+  }
+
+  async history(vaultId: string, pathHmac: string): Promise<HistoryResponse> {
+    return historyResponseSchema.parse(
+      (await this.request({ path: `/vaults/${vaultId}/items/${pathHmac}/history` })).json,
     );
   }
 

@@ -12,6 +12,7 @@ import {
 } from '@vault-sync/shared';
 import type VaultSyncPlugin from './main';
 import { RestClient } from './transport/rest';
+import { CategoryToggles, DEFAULT_CATEGORY_TOGGLES } from './sync/categories';
 
 export interface VaultSyncSettings {
   serverUrl: string;
@@ -32,6 +33,8 @@ export interface VaultSyncSettings {
   // Concurrent file transfers (1..6). Large files (>32 MB) always transfer
   // one at a time regardless, bounding peak memory.
   parallelTransfers: number;
+  // Selective sync by attachment category; notes always sync.
+  syncCategories: CategoryToggles;
 }
 
 export const DEFAULT_SETTINGS: VaultSyncSettings = {
@@ -43,6 +46,7 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
   vmkB64: null,
   maxFileSizeMB: Platform.isMobile ? 100 : 0,
   parallelTransfers: Platform.isMobile ? 2 : 4,
+  syncCategories: { ...DEFAULT_CATEGORY_TOGGLES },
 };
 
 export class VaultSyncSettingTab extends PluginSettingTab {
@@ -113,6 +117,26 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }),
       );
+
+    new Setting(containerEl)
+      .setName('Synced file types')
+      .setDesc('Notes always sync. Disabling a type stops syncing those files on this device (never deletes them).')
+      .setHeading();
+    const categories: { key: keyof CategoryToggles; label: string }[] = [
+      { key: 'image', label: 'Images' },
+      { key: 'audio', label: 'Audio' },
+      { key: 'video', label: 'Video' },
+      { key: 'pdf', label: 'PDFs' },
+      { key: 'other', label: 'All other types' },
+    ];
+    for (const { key, label } of categories) {
+      new Setting(containerEl).setName(label).addToggle((toggle) =>
+        toggle.setValue(settings.syncCategories[key]).onChange(async (value) => {
+          settings.syncCategories[key] = value;
+          await this.plugin.saveSettings();
+        }),
+      );
+    }
 
     // --- Account ---------------------------------------------------------
     let password = '';

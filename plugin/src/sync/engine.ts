@@ -53,6 +53,8 @@ export interface EngineOptions {
   getMaxFileSizeBytes: () => number;
   /** Concurrent file transfers (1..6); large transfers self-serialize. */
   getParallelTransfers: () => number;
+  /** Selective-sync category filter (live, from settings). */
+  isCategoryExcluded: (path: string) => boolean;
   spool: ChunkSpool;
   log: (message: string) => void;
   notify: (message: string) => void;
@@ -211,7 +213,31 @@ export class SyncEngine {
       index: this.opts.index.all(),
       remote,
       maxFileSizeBytes: this.opts.getMaxFileSizeBytes(),
+      isCategoryExcluded: this.opts.isCategoryExcluded,
     });
+  }
+
+  // --- version history -----------------------------------------------------
+
+  /** Newest-first revision list for a path (throws if never synced). */
+  async getHistory(path: string): Promise<Revision[]> {
+    const response = await this.opts.rest.history(
+      this.opts.vaultId,
+      pathHmac(this.opts.keys.macKey, path),
+    );
+    return response.revisions;
+  }
+
+  /**
+   * Restore: write the old revision's content locally, then sync — it pushes
+   * as a NEW revision citing the current head. Nothing is ever rewritten;
+   * the pre-restore state stays one step back in history.
+   */
+  async restoreRevision(path: string, revision: Revision): Promise<void> {
+    const bytes = await this.readBlob(revision);
+    await this.writeLocal(path, bytes);
+    this.opts.log(`restored ${path} from revision of ${revision.serverReceivedAt}`);
+    await this.requestSync();
   }
 
   private scanLocal(): LocalFile[] {
@@ -264,7 +290,7 @@ export class SyncEngine {
       case 'mergeHeads':
         return this.mergeHeads(action.path, action.headIds);
       case 'exclude':
-        return this.exclude(action.path);
+        return this.exclude(action.path, action.reason);
       case 'forgetIndex':
         this.opts.index.remove(action.path);
         return;
@@ -434,7 +460,7 @@ export class SyncEngine {
     this.opts.log(`deleted ${path} (remote tombstone; local copy in .trash)`);
   }
 
-  private exclude(path: string): void {
+  private exclude(path: string, reason: 'size' | 'category'): void {
     const local = this.opts.vault.getFileByPath(path);
     this.opts.index.set({
       path,
@@ -444,9 +470,12 @@ export class SyncEngine {
       excluded: true,
       basePlaintext: null,
     });
-    const capMb = Math.round(this.opts.getMaxFileSizeBytes() / (1024 * 1024));
-    this.opts.notify(`vault-sync: "${path}" exceeds the ${capMb} MB size cap — not synced`);
-    this.opts.log(`excluded ${path} (over size cap)`);
+    if (reason === 'size') {
+      const capMb = Math.round(this.opts.getMaxFileSizeBytes() / (1024 * 1024));
+      this.opts.notify(`vault-sync: "${path}" exceeds the ${capMb} MB size cap — not synced`);
+    }
+    // Category exclusions are a chosen setting — log only, no toast spam.
+    this.opts.log(`excluded ${path} (${reason})`);
   }
 
   // --- merge side --------------------------------------------------------

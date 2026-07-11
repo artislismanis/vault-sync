@@ -257,6 +257,31 @@ describe('sync routes', () => {
     expect(store.objects.has(`blobs/${vaultId}/${rev(1)}/00000`)).toBe(true);
   });
 
+  it('serves full item history, newest first, including tombstones', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/items/${HMAC}/history`,
+      headers: auth(),
+    });
+    expect(res.statusCode).toBe(200);
+    const history = res.json();
+    expect(history.revisions.map((r: { id: string }) => r.id)).toEqual([
+      rev(5),
+      rev(4),
+      rev(3),
+      rev(2),
+      rev(1),
+    ]);
+    expect(history.revisions[0].deleted).toBe(true);
+
+    const missing = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/items/${'f'.repeat(64)}/history`,
+      headers: auth(),
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+
   it('serves legacy v1 blobs (pre-0.0.4 data) via the streamed whole-blob route', async () => {
     // Seed a legacy revision directly (the API no longer creates them).
     const legacyId = '00000000-0000-4000-8000-0000000000aa';
