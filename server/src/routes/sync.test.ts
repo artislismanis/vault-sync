@@ -1,7 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApp } from '../app';
@@ -10,46 +9,7 @@ import { openDb, Db } from '../store/db';
 import type { ObjectStore } from '../store/s3';
 import { rebuildIndex } from '../store/metadata-log';
 import { hashPassword } from '../auth';
-
-function memoryStore(): ObjectStore & { objects: Map<string, Uint8Array> } {
-  const objects = new Map<string, Uint8Array>();
-  const toBytes = (body: Uint8Array | string) =>
-    typeof body === 'string' ? new TextEncoder().encode(body) : body;
-  return {
-    objects,
-    async checkBucket() {
-      return true;
-    },
-    async put(key, body) {
-      objects.set(key, toBytes(body));
-    },
-    async get(key) {
-      const value = objects.get(key);
-      if (!value) throw new Error(`no such key: ${key}`);
-      return value;
-    },
-    async getStream(key) {
-      const value = objects.get(key);
-      if (!value) throw new Error(`no such key: ${key}`);
-      return Readable.from(Buffer.from(value));
-    },
-    async exists(key) {
-      return objects.has(key);
-    },
-    async delete(key) {
-      objects.delete(key);
-    },
-    async list(prefix) {
-      return [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
-    },
-    async listWithMeta(prefix) {
-      return [...objects.keys()]
-        .filter((k) => k.startsWith(prefix))
-        .sort()
-        .map((key) => ({ key, lastModified: new Date() }));
-    },
-  };
-}
+import { memoryStore } from '../test-util/memory-store';
 
 const KDF = {
   algorithm: 'argon2id',

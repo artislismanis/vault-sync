@@ -15,6 +15,7 @@ import type { Config } from '../config';
 export interface ObjectMeta {
   key: string;
   lastModified: Date;
+  sizeBytes: number;
 }
 
 export interface ObjectStore {
@@ -84,7 +85,13 @@ export function createObjectStore(config: Config): ObjectStore {
           new ListObjectsV2Command({ Bucket, Prefix: prefix, ContinuationToken }),
         );
         for (const obj of res.Contents ?? []) {
-          if (obj.Key) objects.push({ key: obj.Key, lastModified: obj.LastModified ?? new Date() });
+          if (obj.Key) {
+            objects.push({
+              key: obj.Key,
+              lastModified: obj.LastModified ?? new Date(),
+              sizeBytes: obj.Size ?? 0,
+            });
+          }
         }
         ContinuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
       } while (ContinuationToken);

@@ -194,6 +194,28 @@ merge/conflict path. Why: chunking raises the ceiling but can't remove the
 whole-file floor (above); the cap is the designed answer for files beyond a
 device's memory, matching Obsidian Sync's size-cap behaviour.
 
+**2026-07-11 — Retention pruning is a manual admin CLI for MVP
+(`prune --older-days N [--vault ID] [--yes]`), preview-by-default.** Removes
+only non-head revisions (heads and tombstone heads are unconditionally
+protected) — blobs, sidecars, and index rows — operating purely on the
+ciphertext DAG. Dangling parent ids in surviving children are harmless
+(heads computation is reference-based). Why manual: keep-everything is the
+safe default, storage is the owner's, and a scheduled policy engine
+(N days → daily → weekly) can layer on later without protocol changes.
+
+**2026-07-11 — Session tokens never expire; revocation is explicit
+(`device-list` / `device-revoke`).** Why: single user on private
+infrastructure; forced re-auth on a phone mid-hike is worse than the threat
+model warrants. Tokens are stored hashed; a stolen index file still yields
+nothing usable. Revisit if multi-user ever lands.
+
+**2026-07-11 — Convergence property tests are part of the test suite.**
+Seeded random offline-edit sequences across 3 simulated clients (real
+planner, real diff3 merge, real crypto, real server via inject) must
+converge to identical vault state every round, with concurrent-head
+collapse and conflict siblings included. Failures reproduce from the
+logged seed. This is the regression net under any future planner change.
+
 **2026-07-11 — Version history restore = write old content locally, push as
 a new revision citing the current head.** Never a server-side rewrite: the
 pre-restore state remains one step back in the DAG, so restore is itself
