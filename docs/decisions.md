@@ -1,0 +1,141 @@
+# Decision Log
+
+Append-only. One entry per significant decision: date, decision, why, and
+what it rules out. Claude Code: add an entry whenever a meaningful choice is
+made or an earlier one is revised — never silently contradict this file.
+
+---
+
+**2026-07-11 — Build self-hosted Obsidian Sync replacement, parity-first.**
+Why: cost, data control, tinkering/extensibility. Rules out: chasing novel
+features before rough parity (sync, selective sync, E2EE, conflicts, history).
+
+**2026-07-11 — TypeScript for server and plugin; shared protocol package.**
+Why: plugin must be TS/JS anyway; one schema definition for both sides;
+ecosystem coverage. Rules out: Python/Go/Rust server for now.
+
+**2026-07-11 — Docker deployment, Synology NAS first, host-generic.**
+Why: easy NAS deploy today, low-friction move to cloud later. Rules out:
+Synology-specific code paths.
+
+**2026-07-11 — S3-compatible object storage as the only persistence target.**
+Why: MinIO already on NAS; direct path to cloud object storage; "back up the
+bucket" = full backup. Rules out: server designs requiring a local database as
+unrecoverable source of truth.
+
+**2026-07-11 — Single user, multiple vaults.**
+Why: personal use. Multi-user deferred; avoid decisions that preclude it.
+
+**2026-07-11 — Full E2EE; server never sees plaintext content, paths, or keys.**
+Why: gold-standard privacy; owner accepts the costs. Consequences accepted:
+no server-side merge/diff/dedup/search; version history is opaque blobs;
+future web client must be given the key by the user.
+
+**2026-07-11 — Client-side conflict resolution: three-way merge, conflict-file
+fallback, never silent loss.** Why: matches Obsidian Sync behaviour; forced by
+E2EE anyway. Requires clients to keep base versions for merge.
+
+**2026-07-11 — Whole-file sync in MVP; chunking/delta deferred.**
+Why: simplicity; notes are small. Large binaries (slide decks) accepted as
+whole-file re-uploads for now; revisit with chunked upload in phase 2.
+
+**2026-07-11 — WebSocket push with polling fallback; mobile syncs on
+foreground.** Why: instant desktop↔desktop feel; realism about mobile OS
+background limits and reverse-proxy/VPN flakiness.
+
+**2026-07-11 — Version history: keep everything by default, retention
+configurable per vault.** Why: storage is owner's; safety net preferred;
+pruning works on ciphertext via the revision DAG.
+
+**2026-07-11 — External edits are first-class (Claude Code, OS file drops).**
+Why: owner's actual workflow. Requires reconciliation scans + desktop file
+watching, not just Obsidian vault events.
+
+**2026-07-11 — Settings sync (.obsidian) targeted as first fast-follow, not
+MVP-blocking.** Why: owner wants it (desktop-focused) but agreed to triage;
+device-specific config makes it fiddly. Glob ignores: include in MVP only if
+cheap.
+
+**2026-07-11 — Onboarding: server URL + password → pick/create vault → E2EE
+passphrase → local folder.** Why: simple, matches Obsidian Sync flow. QR
+pairing deferred.
+
+**2026-07-11 — Network exposure is the owner's choice (OpenVPN or existing
+reverse proxy); server is transport-agnostic HTTP behind TLS termination.**
+
+**2026-07-11 — Admin surface: minimal CLI only (vaults, password reset,
+usage).** Why: single user; avoid building UI nobody needs yet.
+
+**2026-07-11 — AEAD: XChaCha20-Poly1305 via libsodium-wasm (sumo build); no
+WebCrypto AES-GCM.** Why: Argon2id isn't in WebCrypto, so libsodium ships
+regardless — AES-GCM would mean two crypto stacks; 192-bit nonces make random
+nonces unconditionally safe with no cross-device counter state (GCM's 96-bit
+nonces are a birthday liability under keep-every-revision); libsodium's wasm
+is base64-embedded in JS, satisfying the plugin's single-file mobile bundle.
+Rules out: dual crypto providers, nonce-counter coordination. Concedes
+hardware-accelerated AES throughput — irrelevant at note scale.
+
+**2026-07-11 — Envelope encryption from day one: random vault master key
+(VMK) wrapped by Argon2id-derived KEK.** Why: passphrase change becomes a
+32-byte re-wrap instead of re-encrypting the vault; authenticated unwrap IS
+the wrong-passphrase check (fails closed by construction, no known-value
+blob). Full VMK rotation stays re-encrypt-everything, documented as the
+expensive escape hatch. Rules out: deriving content keys directly from the
+passphrase (rejects sync-protocol.md's earlier "acceptable MVP answer").
+
+**2026-07-11 — Vault names are E2EE like everything else.** Server and admin
+CLI see only vault id/created_at/usage; the plugin (key holder) shows names.
+Why: trust model says no names; a vault name is genuinely revealing; no
+week-one exceptions to hard rule 1. Rules out: CLI vault rename (client-side
+operation instead).
+
+**2026-07-11 — Blobs keyed by revision id; no content addressing.** Why:
+random-nonce E2EE makes ciphertext dedup ~nil; 1:1 blob↔revision keeps
+retention pruning trivial (no refcounts/GC). Also deliberately rules out
+convergent encryption — it leaks plaintext-equality to the server.
+
+**2026-07-11 — Metadata: write-ahead JSON sidecars in the bucket + SQLite as
+a rebuildable local index.** Every accepted write: PUT immutable sidecar →
+update SQLite → ack; `admin rebuild-index` reconstructs the index from a
+bucket scan. Why: "back up the bucket = complete backup" holds exactly, with
+no snapshot-lag loss window; SQLite gives transactions and cheap DAG queries.
+Rules out: periodic-snapshot persistence, pure-S3 live store. Note:
+better-sqlite3 today; `node:sqlite` is a cheap future swap (removes the only
+native dep) since the DB is expendable.
+
+**2026-07-11 — Merge base cache: hybrid.** Base plaintext cached in plugin
+data dir for merge-eligible text files ≤1 MB; hash + revision id only for
+binaries/oversized; server fetch-and-decrypt fallback. Why: offline edits are
+the common conflict case and must merge without connectivity; binaries never
+text-merge; the device already holds the vault in plaintext so this is no
+security regression. Rules out: re-fetch-only (breaks offline merge) and
+unconditional caching (2× storage on attachment-heavy mobile vaults).
+
+**2026-07-11 — diff3 library: node-diff3, wrapped in
+`plugin/src/merge/diff3.ts`.** Why: only maintained pure-JS option with true
+diff3 semantics; line granularity matches conflict-file UX. Rules out:
+diff-match-patch (archived; fuzzy patching can silently misplace hunks —
+hostile to never-lose-data) and jsdiff (no three-way merge).
+
+**2026-07-11 — Newly-excluded synced files: stop updating (match Obsidian
+Sync).** Sync index marks them `excluded`; delete propagation suppressed both
+directions; re-inclusion goes through the normal merge/conflict path. Why: a
+settings toggle must never destroy data on other devices. Rules out:
+delete-remote, and server-visible exclusion state (client-side policy only).
+
+**2026-07-11 — No CRDTs in MVP; revision DAG leaves the door open.** Why:
+external edits arrive as plain files with no op history — CRDT ops would be
+synthesized by diffing, i.e. the problem diff3 already solves; the filesystem
+must stay the single source of truth; single-user offline-concurrent sync is
+three-way merge's sweet spot. Door open: a future revision type can carry
+encrypted CRDT (e.g. Yjs) updates as a per-file merge strategy for
+in-Obsidian markdown edits, diff3 fallback for external edits.
+
+**2026-07-11 — Monorepo tooling: npm workspaces with TS-source internal
+packages.** `shared/` exports raw `.ts` (no dist/); esbuild/tsx/vitest consume
+it directly, `tsc --noEmit` per package for types. Node 24 (engines ≥22).
+Fastify 5 + @fastify/websocket, @aws-sdk/client-s3 (forcePathStyle), vitest,
+eslint 9+ flat config with a mechanical ban on Node/Electron imports in
+plugin/ and shared/ (enforces hard rule 2), prettier. Why: kills stale-build
+bugs between workspaces; boring, long-maintenance choices. Rules out: build
+steps for shared/, publishing workspace packages.

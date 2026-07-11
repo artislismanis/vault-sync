@@ -1,0 +1,36 @@
+# OPTIONAL local test harness — a throwaway MinIO for integration tests and
+# experiments, so the real MinIO instance never gets polluted with test data.
+# Not required for dev: the server talks to whatever S3_ENDPOINT/.env supplies.
+# Usage: docker compose -f docker-compose.dev.yml up -d
+#        then point .env at http://127.0.0.1:9000 / vaultsync / vaultsync-dev-secret
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    environment:
+      MINIO_ROOT_USER: vaultsync
+      MINIO_ROOT_PASSWORD: vaultsync-dev-secret
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:9000/minio/health/live || exit 1']
+      interval: 5s
+      timeout: 2s
+      retries: 12
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 vaultsync vaultsync-dev-secret &&
+      mc mb --ignore-existing local/vault-sync-dev
+      "
+
+volumes:
+  minio-data:

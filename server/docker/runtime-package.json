@@ -1,0 +1,7 @@
+{
+  "name": "vault-sync-server-runtime",
+  "private": true,
+  "dependencies": {
+    "better-sqlite3": "^12.11.1"
+  }
+}

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# plugin build artifact (attached to releases, not committed)
+plugin/main.js
+
+# server local state (rebuildable index; source of truth is the bucket)
+server/data/
+data/
+
+.env
+.DS_Store

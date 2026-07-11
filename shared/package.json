@@ -1,0 +1,16 @@
+{
+  "name": "@vault-sync/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "libsodium-wrappers-sumo": "^0.8.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers-sumo": "^0.7.8"
+  }
+}
