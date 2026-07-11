@@ -194,6 +194,22 @@ merge/conflict path. Why: chunking raises the ceiling but can't remove the
 whole-file floor (above); the cap is the designed answer for files beyond a
 device's memory, matching Obsidian Sync's size-cap behaviour.
 
+**2026-07-11 — Resumable large downloads via a ciphertext spool; parallel
+transfers with a single-large-transfer rule.** Downloads >32 MB spool
+ciphertext chunks to the plugin dir as they arrive: an interrupted pull
+(mobile app kill, network drop) resumes by fetching only missing chunks, and
+the whole-file plaintext buffer now exists only during final recompose —
+same peak, drastically shorter memory high-water window. Spools are cleared
+on success, on authentication failure (never resume corrupt data), and when
+their revision stops being a head. Transfers run through a worker pool
+(setting, 1–6; default 4 desktop / 2 mobile) with small-files-first ordering
+and at most ONE >32 MB transfer in flight — peak memory stays bounded at
+~parallel×32 MB + one large file. Merges stay sequential. NOT changed:
+uploads still read whole files (Obsidian API floor) and recompose still
+allocates the full file once — the size cap remains the mobile ceiling
+guard. Spooling ciphertext locally adds no exposure (it is exactly what the
+server stores).
+
 **2026-07-11 — Account credential stays a pre-provisioned env hash for now;
 first-boot setup deferred.** Owner reviewed the friction and chose to keep
 it: single user, no user DB, and the env carries only the scrypt hash (safe

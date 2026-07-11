@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, VaultSyncSettings, VaultSyncSettingTab } from './sett
 import { RestClient } from './transport/rest';
 import { ChangeChannel } from './transport/ws';
 import { IndexStore } from './sync/index-store';
+import { ChunkSpool } from './sync/spool';
 import { SyncEngine } from './sync/engine';
 
 const SYNC_DEBOUNCE_MS = 2_000;
@@ -61,8 +62,10 @@ export default class VaultSyncPlugin extends Plugin {
       vaultId,
       deviceName,
       index,
-      // Getter, not a snapshot: cap changes apply on the very next sync.
+      // Getters, not snapshots: settings changes apply on the very next sync.
       getMaxFileSizeBytes: () => this.settings.maxFileSizeMB * 1024 * 1024,
+      getParallelTransfers: () => this.settings.parallelTransfers,
+      spool: new ChunkSpool(this.app.vault.adapter, `${this.manifest.dir}/spool`),
       log: (message) => console.log(`[vault-sync] ${message}`),
       notify: (message) => new Notice(message),
       status: (message) => this.setStatus(message),

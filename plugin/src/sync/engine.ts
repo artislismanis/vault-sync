@@ -16,6 +16,7 @@ import {
 import type { RestClient } from '../transport/rest';
 import { IndexStore, isMergeableText, BASE_CACHE_MAX_BYTES } from './index-store';
 import { planSync, Action, LocalFile, RemoteItem } from './planner';
+import { ChunkSpool } from './spool';
 import { threeWayMerge } from '../merge/diff3';
 
 // Executes the planner's actions. Hard rule 4 discipline: every destructive
@@ -30,6 +31,10 @@ import { threeWayMerge } from '../merge/diff3';
 
 const MAX_PASSES = 3;
 const CHUNK_PUT_RETRIES = 3;
+// Transfers above this are "large": their ciphertext chunks spool to disk for
+// resume, and only one runs at a time regardless of the parallelism setting
+// (bounds peak memory at roughly parallel × LARGE + one whole large file).
+const LARGE_TRANSFER_BYTES = 32 * 1024 * 1024;
 
 const yieldMain = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -46,6 +51,9 @@ export interface EngineOptions {
    * changes apply on the next sync without restarting the engine.
    */
   getMaxFileSizeBytes: () => number;
+  /** Concurrent file transfers (1..6); large transfers self-serialize. */
+  getParallelTransfers: () => number;
+  spool: ChunkSpool;
   log: (message: string) => void;
   notify: (message: string) => void;
   /** Live status line (status bar / progress toast); null clears it. */
@@ -97,9 +105,21 @@ export class SyncEngine {
         return executed;
       }
       log(`sync: pass ${pass + 1}, ${actions.length} action(s)`);
-      for (let i = 0; i < actions.length; i++) {
-        status(`vault-sync: ${i + 1}/${actions.length} — ${actions[i]!.path}`);
-        await this.execute(actions[i]!);
+
+      // Instant actions (index/tombstone bookkeeping) first, then transfers
+      // through the worker pool, then merges (order-sensitive) sequentially.
+      const instant = actions.filter((a) => a.kind !== 'push' && a.kind !== 'pull' && a.kind !== 'merge' && a.kind !== 'mergeHeads');
+      const transfers = actions.filter((a) => a.kind === 'push' || a.kind === 'pull');
+      const merges = actions.filter((a) => a.kind === 'merge' || a.kind === 'mergeHeads');
+
+      for (const action of instant) {
+        await this.execute(action);
+        executed++;
+      }
+      executed += await this.runTransferPool(transfers);
+      for (const action of merges) {
+        status(`vault-sync: merging ${action.path}`);
+        await this.execute(action);
         executed++;
       }
       await this.opts.index.persist();
@@ -108,30 +128,84 @@ export class SyncEngine {
   }
 
   /**
+   * Concurrent transfers with two guarantees: small files are never starved
+   * by big ones (queue is size-ordered), and at most ONE large transfer is in
+   * flight (whole-file buffers must not stack up on mobile).
+   */
+  private async runTransferPool(transfers: Action[]): Promise<number> {
+    if (transfers.length === 0) return 0;
+    const limit = Math.min(Math.max(1, this.opts.getParallelTransfers()), 6, transfers.length);
+    let next = 0;
+    let done = 0;
+    let largeLock: Promise<void> = Promise.resolve();
+    const errors: unknown[] = [];
+
+    const worker = async () => {
+      for (;;) {
+        const action = transfers[next++];
+        if (!action) return;
+        try {
+          if (this.sizeOf(action) > LARGE_TRANSFER_BYTES) {
+            const previous = largeLock;
+            let release!: () => void;
+            largeLock = new Promise((resolve) => (release = resolve));
+            await previous;
+            try {
+              await this.execute(action);
+            } finally {
+              release();
+            }
+          } else {
+            await this.execute(action);
+          }
+          done++;
+          this.opts.status(`vault-sync: ${done}/${transfers.length} file(s)`);
+        } catch (err) {
+          errors.push(err);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: limit }, worker));
+    if (errors.length > 0) {
+      // Completed transfers are already indexed; the rest retry next sync.
+      throw errors[0];
+    }
+    return done;
+  }
+
+  /**
    * Small files first: a 500 MB transfer must never make a one-line note
    * edit wait minutes. Metadata-only actions sort to the front.
    */
   private orderBySize(actions: Action[]): Action[] {
-    const sizeOf = (action: Action): number => {
-      switch (action.kind) {
-        case 'push':
-          return this.opts.vault.getFileByPath(action.path)?.stat.size ?? 0;
-        case 'pull':
-        case 'merge':
-        case 'mergeHeads': {
-          const heads = this.remoteHeadsByPath.get(action.path)?.heads ?? [];
-          return Math.max(0, ...heads.map((h) => h.sizeBytes));
-        }
-        default:
-          return 0; // tombstones, exclusions, index cleanup — instant
+    return [...actions].sort((a, b) => this.sizeOf(a) - this.sizeOf(b));
+  }
+
+  private sizeOf(action: Action): number {
+    switch (action.kind) {
+      case 'push':
+        return this.opts.vault.getFileByPath(action.path)?.stat.size ?? 0;
+      case 'pull':
+      case 'merge':
+      case 'mergeHeads': {
+        const heads = this.remoteHeadsByPath.get(action.path)?.heads ?? [];
+        return Math.max(0, ...heads.map((h) => h.sizeBytes));
       }
-    };
-    return [...actions].sort((a, b) => sizeOf(a) - sizeOf(b));
+      default:
+        return 0; // tombstones, exclusions, index cleanup — instant
+    }
   }
 
   private async planOnce(): Promise<Action[]> {
     const local = this.scanLocal();
     const remote = await this.fetchRemote();
+    // Spools for revisions that are no longer heads can never complete.
+    const headIds = new Set<string>();
+    for (const item of this.remoteHeadsByPath.values()) {
+      for (const head of item.heads) headIds.add(head.id);
+    }
+    await this.opts.spool.retainOnly(headIds);
     return planSync({
       local,
       index: this.opts.index.all(),
@@ -253,33 +327,54 @@ export class SyncEngine {
 
   /** Format-dispatched download: v2 chunked (preallocated) or legacy v1. */
   private async readBlob(revision: Revision): Promise<Uint8Array> {
-    const { rest, keys, vaultId } = this.opts;
+    const { rest, keys, vaultId, spool } = this.opts;
     if (revision.chunks == null || revision.streamHeaderB64 == null) {
       return decryptContent(keys, await rest.getBlob(vaultId, revision.id));
     }
+
+    // Large downloads are resumable: ciphertext chunks spool to disk as they
+    // arrive (an interrupted pull re-fetches only what's missing), and the
+    // whole-file plaintext buffer exists only during recompose below.
+    const useSpool = revision.sizeBytes > LARGE_TRANSFER_BYTES;
+    if (useSpool) {
+      for (let seq = 0; seq < revision.chunks; seq++) {
+        if (await spool.has(revision.id, seq)) continue;
+        this.opts.status(`vault-sync: downloading — chunk ${seq + 1}/${revision.chunks}`);
+        await spool.write(revision.id, seq, await rest.getChunk(vaultId, revision.id, seq));
+        await yieldMain();
+      }
+      this.opts.status('vault-sync: recomposing…');
+    }
+
     const decryptor = createStreamDecryptor(keys.contentKey, revision.id, revision.streamHeaderB64);
     // One exact-size buffer; each decrypted chunk is copied in and dropped.
     const out = new Uint8Array(revision.sizeBytes);
     let offset = 0;
-    for (let seq = 0; seq < revision.chunks; seq++) {
-      if (revision.chunks > 4) {
-        this.opts.status(`vault-sync: downloading — chunk ${seq + 1}/${revision.chunks}`);
+    try {
+      for (let seq = 0; seq < revision.chunks; seq++) {
+        const ciphertext = useSpool
+          ? await spool.read(revision.id, seq)
+          : await rest.getChunk(vaultId, revision.id, seq);
+        const { plaintext, final } = decryptor.pullChunk(ciphertext);
+        if (final !== (seq === revision.chunks - 1)) {
+          throw new StreamDecryptionError('stream length mismatch (truncated or extended)');
+        }
+        if (offset + plaintext.byteLength > out.byteLength) {
+          throw new StreamDecryptionError('content larger than declared size');
+        }
+        out.set(plaintext, offset);
+        offset += plaintext.byteLength;
+        await yieldMain();
       }
-      const ciphertext = await rest.getChunk(vaultId, revision.id, seq);
-      const { plaintext, final } = decryptor.pullChunk(ciphertext);
-      if (final !== (seq === revision.chunks - 1)) {
-        throw new StreamDecryptionError('stream length mismatch (truncated or extended)');
+      if (offset !== out.byteLength) {
+        throw new StreamDecryptionError('content smaller than declared size');
       }
-      if (offset + plaintext.byteLength > out.byteLength) {
-        throw new StreamDecryptionError('content larger than declared size');
-      }
-      out.set(plaintext, offset);
-      offset += plaintext.byteLength;
-      await yieldMain();
+    } catch (err) {
+      // A spool that fails authentication is corrupt — never resume from it.
+      if (useSpool && err instanceof StreamDecryptionError) await spool.clear(revision.id);
+      throw err;
     }
-    if (offset !== out.byteLength) {
-      throw new StreamDecryptionError('content smaller than declared size');
-    }
+    if (useSpool) await spool.clear(revision.id);
     return out;
   }
 

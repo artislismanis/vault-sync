@@ -29,6 +29,9 @@ export interface VaultSyncSettings {
   // guard: Obsidian's file API is whole-file, so a file must fit in webview
   // memory at least once.
   maxFileSizeMB: number;
+  // Concurrent file transfers (1..6). Large files (>32 MB) always transfer
+  // one at a time regardless, bounding peak memory.
+  parallelTransfers: number;
 }
 
 export const DEFAULT_SETTINGS: VaultSyncSettings = {
@@ -39,6 +42,7 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
   vaultId: null,
   vmkB64: null,
   maxFileSizeMB: Platform.isMobile ? 100 : 0,
+  parallelTransfers: Platform.isMobile ? 2 : 4,
 };
 
 export class VaultSyncSettingTab extends PluginSettingTab {
@@ -94,6 +98,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           }
         }),
+      );
+
+    new Setting(containerEl)
+      .setName('Parallel transfers')
+      .setDesc('Concurrent file uploads/downloads. Files over 32 MB always go one at a time.')
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 6, 1)
+          .setValue(settings.parallelTransfers)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            settings.parallelTransfers = value;
+            await this.plugin.saveSettings();
+          }),
       );
 
     // --- Account ---------------------------------------------------------
