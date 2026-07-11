@@ -14,6 +14,8 @@ export default class VaultSyncPlugin extends Plugin {
   private engine: SyncEngine | null = null;
   private channel: ChangeChannel | null = null;
   private debounceTimer: number | null = null;
+  private statusBar: HTMLElement | null = null;
+  private progressNotice: Notice | null = null;
 
   async onload(): Promise<void> {
     // Crypto must be ready before ANY sync activity — single init point.
@@ -50,6 +52,8 @@ export default class VaultSyncPlugin extends Plugin {
     const index = IndexStore.forVault(this.app.vault.adapter, this.manifest.dir!, vaultId);
     await index.load();
 
+    this.statusBar ??= this.addStatusBarItem();
+
     this.engine = new SyncEngine({
       vault: this.app.vault,
       rest,
@@ -57,9 +61,11 @@ export default class VaultSyncPlugin extends Plugin {
       vaultId,
       deviceName,
       index,
-      maxFileSizeBytes: this.settings.maxFileSizeMB * 1024 * 1024,
+      // Getter, not a snapshot: cap changes apply on the very next sync.
+      getMaxFileSizeBytes: () => this.settings.maxFileSizeMB * 1024 * 1024,
       log: (message) => console.log(`[vault-sync] ${message}`),
       notify: (message) => new Notice(message),
+      status: (message) => this.setStatus(message),
     });
 
     // Local change sources: vault events (debounced)…
@@ -97,10 +103,30 @@ export default class VaultSyncPlugin extends Plugin {
       return;
     }
     try {
-      await this.engine.requestSync();
+      const changes = await this.engine.requestSync();
+      new Notice(changes === 0 ? 'vault-sync: up to date' : `vault-sync: ${changes} change(s) synced`);
     } catch (err) {
       console.error('[vault-sync] sync failed', err);
       new Notice(`vault-sync: sync failed — ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * Live progress: status bar on desktop; on mobile (no status bar) a single
+   * persistent Notice that updates in place during long transfers.
+   */
+  private setStatus(message: string | null): void {
+    this.statusBar?.setText(message ?? 'vault-sync: idle');
+    const isTransfer = message?.includes('chunk') ?? false;
+    if (isTransfer) {
+      if (this.progressNotice) {
+        this.progressNotice.setMessage(message!);
+      } else {
+        this.progressNotice = new Notice(message!, 0);
+      }
+    } else if (this.progressNotice) {
+      this.progressNotice.hide();
+      this.progressNotice = null;
     }
   }
 

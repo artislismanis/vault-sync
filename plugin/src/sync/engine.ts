@@ -41,10 +41,15 @@ export interface EngineOptions {
   vaultId: string;
   deviceName: string;
   index: IndexStore;
-  /** Selective-sync size cap in bytes; 0 = unlimited. */
-  maxFileSizeBytes: number;
+  /**
+   * Selective-sync size cap in bytes; 0 = unlimited. A getter so settings
+   * changes apply on the next sync without restarting the engine.
+   */
+  getMaxFileSizeBytes: () => number;
   log: (message: string) => void;
   notify: (message: string) => void;
+  /** Live status line (status bar / progress toast); null clears it. */
+  status: (message: string | null) => void;
 }
 
 export class SyncEngine {
@@ -56,39 +61,72 @@ export class SyncEngine {
 
   constructor(private opts: EngineOptions) {}
 
-  /** Debounce-friendly entry point: coalesces overlapping requests. */
-  async requestSync(): Promise<void> {
+  /**
+   * Debounce-friendly entry point: coalesces overlapping requests.
+   * Returns the number of actions executed (0 = already up to date).
+   */
+  async requestSync(): Promise<number> {
     if (this.running) {
       this.queued = true;
-      return;
+      return 0;
     }
     this.running = true;
     try {
+      let total = 0;
       do {
         this.queued = false;
-        await this.fullSync();
+        total += await this.fullSync();
       } while (this.queued);
+      return total;
     } finally {
       this.running = false;
+      this.opts.status(null);
     }
   }
 
-  async fullSync(): Promise<void> {
-    const { log } = this.opts;
+  async fullSync(): Promise<number> {
+    const { log, status } = this.opts;
+    let executed = 0;
     // Multiple passes: conflict files created in pass N are pushed in pass
     // N+1; a merge push also needs a follow-up heads check.
     for (let pass = 0; pass < MAX_PASSES; pass++) {
-      const actions = await this.planOnce();
+      status('vault-sync: checking…');
+      const actions = this.orderBySize(await this.planOnce());
       if (actions.length === 0) {
         if (pass === 0) log('sync: up to date');
-        return;
+        return executed;
       }
       log(`sync: pass ${pass + 1}, ${actions.length} action(s)`);
-      for (const action of actions) {
-        await this.execute(action);
+      for (let i = 0; i < actions.length; i++) {
+        status(`vault-sync: ${i + 1}/${actions.length} — ${actions[i]!.path}`);
+        await this.execute(actions[i]!);
+        executed++;
       }
       await this.opts.index.persist();
     }
+    return executed;
+  }
+
+  /**
+   * Small files first: a 500 MB transfer must never make a one-line note
+   * edit wait minutes. Metadata-only actions sort to the front.
+   */
+  private orderBySize(actions: Action[]): Action[] {
+    const sizeOf = (action: Action): number => {
+      switch (action.kind) {
+        case 'push':
+          return this.opts.vault.getFileByPath(action.path)?.stat.size ?? 0;
+        case 'pull':
+        case 'merge':
+        case 'mergeHeads': {
+          const heads = this.remoteHeadsByPath.get(action.path)?.heads ?? [];
+          return Math.max(0, ...heads.map((h) => h.sizeBytes));
+        }
+        default:
+          return 0; // tombstones, exclusions, index cleanup — instant
+      }
+    };
+    return [...actions].sort((a, b) => sizeOf(a) - sizeOf(b));
   }
 
   private async planOnce(): Promise<Action[]> {
@@ -98,7 +136,7 @@ export class SyncEngine {
       local,
       index: this.opts.index.all(),
       remote,
-      maxFileSizeBytes: this.opts.maxFileSizeBytes,
+      maxFileSizeBytes: this.opts.getMaxFileSizeBytes(),
     });
   }
 
@@ -178,6 +216,9 @@ export class SyncEngine {
     const chunks = chunkCountFor(plaintext.byteLength);
 
     for (let seq = 0; seq < chunks; seq++) {
+      if (chunks > 4) {
+        this.opts.status(`vault-sync: uploading ${path} — chunk ${seq + 1}/${chunks}`);
+      }
       const slice = plaintext.subarray(seq * CHUNK_BYTES, (seq + 1) * CHUNK_BYTES);
       // Loop-scoped so each ciphertext is collectible after its PUT succeeds.
       const ciphertext = encryptor.pushChunk(slice, seq === chunks - 1);
@@ -221,6 +262,9 @@ export class SyncEngine {
     const out = new Uint8Array(revision.sizeBytes);
     let offset = 0;
     for (let seq = 0; seq < revision.chunks; seq++) {
+      if (revision.chunks > 4) {
+        this.opts.status(`vault-sync: downloading — chunk ${seq + 1}/${revision.chunks}`);
+      }
       const ciphertext = await rest.getChunk(vaultId, revision.id, seq);
       const { plaintext, final } = decryptor.pullChunk(ciphertext);
       if (final !== (seq === revision.chunks - 1)) {
@@ -305,7 +349,7 @@ export class SyncEngine {
       excluded: true,
       basePlaintext: null,
     });
-    const capMb = Math.round(this.opts.maxFileSizeBytes / (1024 * 1024));
+    const capMb = Math.round(this.opts.getMaxFileSizeBytes() / (1024 * 1024));
     this.opts.notify(`vault-sync: "${path}" exceeds the ${capMb} MB size cap — not synced`);
     this.opts.log(`excluded ${path} (over size cap)`);
   }
