@@ -11,6 +11,14 @@ const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif'
 const AUDIO = new Set(['mp3', 'wav', 'm4a', 'ogg', 'oga', 'flac', 'aac', '3gp', 'opus']);
 const VIDEO = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v']);
 
+/** Extension lists per toggleable category, for settings UI copy. */
+export const CATEGORY_EXTENSIONS: Record<'image' | 'audio' | 'video' | 'pdf', readonly string[]> = {
+  image: [...IMAGE].sort(),
+  audio: [...AUDIO].sort(),
+  video: [...VIDEO].sort(),
+  pdf: ['pdf'],
+};
+
 export function categoryOf(path: string): FileCategory {
   if (isMergeableText(path)) return 'note';
   const ext = path.split('.').pop()?.toLowerCase() ?? '';

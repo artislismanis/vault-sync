@@ -1,1 +1,20 @@
-/* Vault Sync plugin styles (status indicator, history view) land here. */
+/* Vault Sync status-bar indicator */
+.vault-sync-status {
+  display: flex;
+  align-items: center;
+}
+
+.vault-sync-status svg {
+  width: var(--icon-s);
+  height: var(--icon-s);
+}
+
+.vault-sync-spin svg {
+  animation: vault-sync-rotate 1.5s linear infinite;
+}
+
+@keyframes vault-sync-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}

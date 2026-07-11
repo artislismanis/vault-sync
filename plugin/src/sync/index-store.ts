@@ -37,6 +37,8 @@ export function isMergeableText(path: string): boolean {
   return MERGEABLE_EXTENSIONS.has(ext);
 }
 
+export const MERGEABLE_EXTENSION_LIST: readonly string[] = [...MERGEABLE_EXTENSIONS].sort();
+
 export class IndexStore {
   private entries = new Map<string, IndexEntry>();
 

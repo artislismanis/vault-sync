@@ -12,7 +12,8 @@ import {
 } from '@vault-sync/shared';
 import type VaultSyncPlugin from './main';
 import { RestClient } from './transport/rest';
-import { CategoryToggles, DEFAULT_CATEGORY_TOGGLES } from './sync/categories';
+import { CATEGORY_EXTENSIONS, CategoryToggles, DEFAULT_CATEGORY_TOGGLES } from './sync/categories';
+import { MERGEABLE_EXTENSION_LIST } from './sync/index-store';
 
 export interface VaultSyncSettings {
   serverUrl: string;
@@ -35,6 +36,8 @@ export interface VaultSyncSettings {
   parallelTransfers: number;
   // Selective sync by attachment category; notes always sync.
   syncCategories: CategoryToggles;
+  // Pause switch: no pushes/pulls while true (status icon shows paused).
+  paused: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultSyncSettings = {
@@ -47,6 +50,7 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
   maxFileSizeMB: Platform.isMobile ? 100 : 0,
   parallelTransfers: Platform.isMobile ? 2 : 4,
   syncCategories: { ...DEFAULT_CATEGORY_TOGGLES },
+  paused: false,
 };
 
 export class VaultSyncSettingTab extends PluginSettingTab {
@@ -120,22 +124,32 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Synced file types')
-      .setDesc('Notes always sync. Disabling a type stops syncing those files on this device (never deletes them).')
+      .setDesc(
+        `Notes always sync (${MERGEABLE_EXTENSION_LIST.join(', ')}). Disabling a type stops ` +
+          'syncing those files on this device — nothing is ever deleted.',
+      )
       .setHeading();
-    const categories: { key: keyof CategoryToggles; label: string }[] = [
-      { key: 'image', label: 'Images' },
-      { key: 'audio', label: 'Audio' },
-      { key: 'video', label: 'Video' },
-      { key: 'pdf', label: 'PDFs' },
-      { key: 'other', label: 'All other types' },
+    const categories: { key: keyof CategoryToggles; label: string; desc: string }[] = [
+      { key: 'image', label: 'Images', desc: CATEGORY_EXTENSIONS.image.join(', ') },
+      { key: 'audio', label: 'Audio', desc: CATEGORY_EXTENSIONS.audio.join(', ') },
+      { key: 'video', label: 'Video', desc: CATEGORY_EXTENSIONS.video.join(', ') },
+      { key: 'pdf', label: 'PDFs', desc: CATEGORY_EXTENSIONS.pdf.join(', ') },
+      {
+        key: 'other',
+        label: 'All other types',
+        desc: 'Any extension not listed above (e.g. zip, docx, pptx, epub)',
+      },
     ];
-    for (const { key, label } of categories) {
-      new Setting(containerEl).setName(label).addToggle((toggle) =>
-        toggle.setValue(settings.syncCategories[key]).onChange(async (value) => {
-          settings.syncCategories[key] = value;
-          await this.plugin.saveSettings();
-        }),
-      );
+    for (const { key, label, desc } of categories) {
+      new Setting(containerEl)
+        .setName(label)
+        .setDesc(desc)
+        .addToggle((toggle) =>
+          toggle.setValue(settings.syncCategories[key]).onChange(async (value) => {
+            settings.syncCategories[key] = value;
+            await this.plugin.saveSettings();
+          }),
+        );
     }
 
     // --- Account ---------------------------------------------------------

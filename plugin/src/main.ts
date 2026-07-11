@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile } from 'obsidian';
+import { Menu, Notice, Plugin, setIcon, TFile } from 'obsidian';
 import { deriveVaultKeys, getSodium, initSodium } from '@vault-sync/shared';
 import { DEFAULT_SETTINGS, VaultSyncSettings, VaultSyncSettingTab } from './settings';
 import { RestClient } from './transport/rest';
@@ -23,6 +23,10 @@ export default class VaultSyncPlugin extends Plugin {
   private statusBar: HTMLElement | null = null;
   private progressNotice: Notice | null = null;
   private activity: ActivityEntry[] = [];
+  private syncState: 'idle' | 'syncing' | 'error' | 'paused' = 'idle';
+  private lastSyncAt: Date | null = null;
+  private lastError: string | null = null;
+  private currentDetail: string | null = null;
 
   async onload(): Promise<void> {
     // Crypto must be ready before ANY sync activity — single init point.
@@ -39,6 +43,11 @@ export default class VaultSyncPlugin extends Plugin {
       id: 'activity-log',
       name: 'Show sync activity',
       callback: () => new ActivityModal(this.app, this.activity).open(),
+    });
+    this.addCommand({
+      id: 'toggle-pause',
+      name: 'Pause/resume sync',
+      callback: () => void this.togglePause(),
     });
     this.addCommand({
       id: 'version-history',
@@ -86,7 +95,38 @@ export default class VaultSyncPlugin extends Plugin {
     const index = IndexStore.forVault(this.app.vault.adapter, this.manifest.dir!, vaultId);
     await index.load();
 
-    this.statusBar ??= this.addStatusBarItem();
+    if (!this.statusBar) {
+      this.statusBar = this.addStatusBarItem();
+      this.statusBar.addClass('mod-clickable', 'vault-sync-status');
+      // Left-click: activity log. Right-click: sync menu.
+      this.registerDomEvent(this.statusBar, 'click', () =>
+        new ActivityModal(this.app, this.activity).open(),
+      );
+      this.registerDomEvent(this.statusBar, 'contextmenu', (event) => {
+        event.preventDefault();
+        const menu = new Menu();
+        menu.addItem((item) =>
+          item
+            .setTitle('Sync now')
+            .setIcon('refresh-cw')
+            .onClick(() => this.syncNow(true)),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(this.settings.paused ? 'Resume sync' : 'Pause sync')
+            .setIcon(this.settings.paused ? 'play' : 'pause')
+            .onClick(() => void this.togglePause()),
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle('Sync activity')
+            .setIcon('list')
+            .onClick(() => new ActivityModal(this.app, this.activity).open()),
+        );
+        menu.showAtMouseEvent(event);
+      });
+    }
+    this.refreshStatusIcon();
 
     this.engine = new SyncEngine({
       vault: this.app.vault,
@@ -117,9 +157,7 @@ export default class VaultSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on('delete', onVaultEvent));
     this.registerEvent(this.app.vault.on('rename', onVaultEvent));
     // …periodic rescan for external edits Obsidian didn't notice…
-    this.registerInterval(
-      window.setInterval(() => void this.engine?.requestSync(), PERIODIC_RESCAN_MS),
-    );
+    this.registerInterval(window.setInterval(() => void this.syncNow(false), PERIODIC_RESCAN_MS));
     // …app foreground (mobile background→resume never re-runs onload)…
     this.registerDomEvent(document, 'visibilitychange', () => {
       if (!document.hidden) this.scheduleSync();
@@ -132,33 +170,83 @@ export default class VaultSyncPlugin extends Plugin {
     // …and a polling fallback whenever the WebSocket is down.
     this.registerInterval(
       window.setInterval(() => {
-        if (!this.channel?.isConnected()) void this.engine?.requestSync();
+        if (!this.channel?.isConnected()) void this.syncNow(false);
       }, POLLING_FALLBACK_MS),
     );
 
-    await this.syncNow();
+    await this.syncNow(false);
   }
 
   private scheduleSync(): void {
+    if (this.settings.paused) return;
     if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
     this.debounceTimer = window.setTimeout(() => {
       this.debounceTimer = null;
-      void this.engine?.requestSync();
+      void this.syncNow(false);
     }, SYNC_DEBOUNCE_MS);
   }
 
-  async syncNow(): Promise<void> {
+  async syncNow(interactive = true): Promise<void> {
     if (!this.engine) {
-      new Notice('vault-sync: not configured — connect a vault in settings');
+      if (interactive) new Notice('vault-sync: not configured — connect a vault in settings');
       return;
     }
+    if (this.settings.paused) {
+      if (interactive) new Notice('vault-sync: sync is paused — resume from the status bar menu');
+      return;
+    }
+    this.syncState = 'syncing';
+    this.refreshStatusIcon();
     try {
       const changes = await this.engine.requestSync();
-      new Notice(changes === 0 ? 'vault-sync: up to date' : `vault-sync: ${changes} change(s) synced`);
+      this.syncState = 'idle';
+      this.lastSyncAt = new Date();
+      this.lastError = null;
+      if (interactive) {
+        new Notice(changes === 0 ? 'vault-sync: up to date' : `vault-sync: ${changes} change(s) synced`);
+      }
     } catch (err) {
-      console.error('[vault-sync] sync failed', err);
-      new Notice(`vault-sync: sync failed — ${(err as Error).message}`);
+      this.syncState = 'error';
+      this.lastError = (err as Error).message;
+      this.logActivity(`sync failed — ${this.lastError}`);
+      new Notice(`vault-sync: sync failed — ${this.lastError}`);
+    } finally {
+      this.refreshStatusIcon();
     }
+  }
+
+  async togglePause(): Promise<void> {
+    this.settings.paused = !this.settings.paused;
+    await this.saveSettings();
+    this.logActivity(this.settings.paused ? 'sync paused' : 'sync resumed');
+    new Notice(`vault-sync: ${this.settings.paused ? 'paused' : 'resumed'}`);
+    this.refreshStatusIcon();
+    if (!this.settings.paused) void this.syncNow(false);
+  }
+
+  /** Icon per state; details live in the tooltip. */
+  private refreshStatusIcon(): void {
+    if (!this.statusBar) return;
+    const state = this.settings.paused ? 'paused' : this.syncState;
+    const icons = {
+      idle: 'check-circle',
+      syncing: 'refresh-cw',
+      error: 'alert-circle',
+      paused: 'pause',
+    } as const;
+    setIcon(this.statusBar, icons[state]);
+    this.statusBar.toggleClass('vault-sync-spin', state === 'syncing');
+
+    const parts = [`Vault Sync: ${state}`];
+    if (state === 'syncing' && this.currentDetail) parts.push(this.currentDetail);
+    if (state === 'error' && this.lastError) parts.push(this.lastError);
+    if (this.lastSyncAt) parts.push(`last sync ${this.lastSyncAt.toLocaleTimeString()}`);
+    parts.push(this.channel?.isConnected() ? 'live updates connected' : 'polling (no WebSocket)');
+    parts.push('click: activity · right-click: menu');
+    const tooltip = parts.join('\n');
+    this.statusBar.setAttribute('aria-label', tooltip);
+    this.statusBar.setAttribute('data-tooltip-position', 'top');
+    this.statusBar.title = tooltip;
   }
 
   private logActivity(message: string): void {
@@ -178,11 +266,13 @@ export default class VaultSyncPlugin extends Plugin {
   }
 
   /**
-   * Live progress: status bar on desktop; on mobile (no status bar) a single
-   * persistent Notice that updates in place during long transfers.
+   * Live progress: feeds the status-icon tooltip on desktop; on mobile (no
+   * status bar) a single persistent Notice updates in place during long
+   * transfers.
    */
   private setStatus(message: string | null): void {
-    this.statusBar?.setText(message ?? 'vault-sync: idle');
+    this.currentDetail = message;
+    this.refreshStatusIcon();
     const isTransfer = message?.includes('chunk') ?? false;
     if (isTransfer) {
       if (this.progressNotice) {
