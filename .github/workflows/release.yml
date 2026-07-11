@@ -36,11 +36,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: Verify tag matches plugin manifest version
+      - name: Verify tag matches plugin manifest and server versions
         run: |
           MANIFEST_VERSION=$(node -p "require('./plugin/manifest.json').version")
-          if [ "$MANIFEST_VERSION" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::tag $GITHUB_REF_NAME != plugin/manifest.json version $MANIFEST_VERSION — run 'npm version <bump> -w plugin' first"
+          SERVER_VERSION=$(node -p "require('./server/package.json').version")
+          if [ "$MANIFEST_VERSION" != "$GITHUB_REF_NAME" ] || [ "$SERVER_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME != manifest ($MANIFEST_VERSION) / server ($SERVER_VERSION) — run 'npm version <bump> -w plugin -w server' first"
             exit 1
           fi
       - run: npm run build -w plugin

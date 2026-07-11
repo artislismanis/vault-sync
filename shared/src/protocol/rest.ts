@@ -16,6 +16,8 @@ export const kdfParamsSchema = z.object({
 export const healthResponseSchema = z.object({
   ok: z.boolean(),
   s3: z.enum(['ok', 'unreachable']),
+  // Optional so clients tolerate pre-0.0.5 servers.
+  version: z.string().optional(),
 });
 
 export const loginRequestSchema = z.object({

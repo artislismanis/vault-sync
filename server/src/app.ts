@@ -1,6 +1,7 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import type { HealthResponse } from '@vault-sync/shared';
+import { version as SERVER_VERSION } from '../package.json';
 import type { Config } from './config';
 import type { Db } from './store/db';
 import type { ObjectStore } from './store/s3';
@@ -31,7 +32,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.get('/healthz', async (): Promise<HealthResponse> => {
     const s3ok = await deps.store.checkBucket();
-    return { ok: s3ok, s3: s3ok ? 'ok' : 'unreachable' };
+    return { ok: s3ok, s3: s3ok ? 'ok' : 'unreachable', version: SERVER_VERSION };
   });
 
   registerVaultRoutes(app, deps);

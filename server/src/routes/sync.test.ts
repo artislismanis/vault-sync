@@ -90,6 +90,16 @@ describe('sync routes', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it('reports the server version at /healthz (no auth required)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/healthz' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      ok: true,
+      s3: 'ok',
+      version: expect.stringMatching(/^\d+\.\d+\.\d+$/),
+    });
+  });
+
   it('rejects wrong password and unauthenticated requests', async () => {
     const bad = await app.inject({
       method: 'POST',
