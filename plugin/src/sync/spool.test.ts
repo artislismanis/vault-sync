@@ -20,7 +20,7 @@ function fakeFs(): SpoolFs & { paths: Map<string, ArrayBuffer> } {
       if (!data) throw new Error(`missing ${p}`);
       return data;
     },
-    async rmdir(p, _recursive) {
+    async rmdir(p) {
       dirs.delete(p);
       for (const key of [...paths.keys()]) if (key.startsWith(`${p}/`)) paths.delete(key);
     },
