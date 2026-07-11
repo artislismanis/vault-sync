@@ -1,0 +1,73 @@
+# Tagging a bare semver (e.g. `0.0.2`, no `v` — must equal plugin/manifest.json
+# version, the Obsidian/BRAT convention) releases BOTH artifacts:
+#   - GitHub Release with plugin assets (main.js, manifest.json, styles.css) → BRAT
+#   - ghcr.io/<owner>/vault-sync-server:<version> + :latest → NAS deployment
+name: Release
+
+on:
+  push:
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm run lint
+
+  plugin-release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Verify tag matches plugin manifest version
+        run: |
+          MANIFEST_VERSION=$(node -p "require('./plugin/manifest.json').version")
+          if [ "$MANIFEST_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME != plugin/manifest.json version $MANIFEST_VERSION — run 'npm version <bump> -w plugin' first"
+            exit 1
+          fi
+      - run: npm run build -w plugin
+      - name: Create GitHub release with plugin assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            plugin/main.js plugin/manifest.json plugin/styles.css
+
+  server-image:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: server/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vault-sync-server:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/vault-sync-server:latest

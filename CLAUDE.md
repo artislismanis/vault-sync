@@ -33,6 +33,11 @@ docs/      Specs and decisions (see above)
 - Admin CLI: `npm run -w server admin -- <hash-password|vault-list|rebuild-index>`
 - Plugin dev build: `npm run dev -w plugin` (watch mode; set `OUTFILE=<vault>/.obsidian/plugins/vault-sync/main.js` to build into a test vault)
 - Plugin release build: `npm run build -w plugin` → `plugin/main.js`
+- Release (plugin + server image): `npm version patch -w plugin` (syncs
+  manifest.json/versions.json) → commit → `git tag <version>` (bare semver,
+  no `v`, must equal manifest version) → `git push && git push --tags`.
+  GitHub Actions then publishes the BRAT release assets and pushes
+  `ghcr.io/artislismanis/vault-sync-server:<version>` + `:latest`.
 
 ## Hard rules
 

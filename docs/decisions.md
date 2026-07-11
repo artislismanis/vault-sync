@@ -161,6 +161,25 @@ heads (diff3 when text+base allows, otherwise newest head keeps the path and
 the rest become conflict siblings — nothing discarded). Local deletes applied
 from remote tombstones go to the vault-local trash, not hard deletion.
 
+**2026-07-11 — Distribution: public GitHub repo; bare-semver tags release
+both artifacts; BRAT is the plugin channel for now.** One tag (`x.y.z`, no
+`v`, must equal plugin manifest version) drives GitHub Actions to publish the
+plugin release assets (main.js/manifest.json/styles.css — what BRAT consumes)
+AND push `ghcr.io/artislismanis/vault-sync-server:<version>` + `:latest`.
+Why: public is safe under E2EE (secrets live only in `.env`), BRAT gives
+one-tap updates on mobile, single version stream keeps plugin/server pairing
+obvious. Rules out: community-plugin submission for now; private-repo BRAT
+tokens on every device.
+
+**2026-07-11 — Deploy compose ships an OPTIONAL bundled MinIO behind a
+compose profile; default is external S3.** `docker compose up -d` = server
+only, pointed at existing storage (the owner's case);
+`--profile bundled-minio` = fully self-contained stack for first-runs/other
+hosts. Why: deployment convenience without touching the app's
+storage-agnostic design (hard rule 5); the owner already runs MinIO. Rules
+out: baking MinIO into the server image or making it a hard compose
+dependency.
+
 **2026-07-11 — Monorepo tooling: npm workspaces with TS-source internal
 packages.** `shared/` exports raw `.ts` (no dist/); esbuild/tsx/vitest consume
 it directly, `tsc --noEmit` per package for types. Node 24 (engines ≥22).
