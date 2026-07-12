@@ -18,3 +18,52 @@
     transform: rotate(360deg);
   }
 }
+
+/* Settings tab bar */
+.vault-sync-settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-4-2);
+}
+
+/* Version history modal */
+.vault-sync-history-modal {
+  width: var(--modal-width);
+  max-width: 56rem;
+}
+
+.vault-sync-history-tabs {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-4-2);
+}
+
+.vault-sync-history-pane {
+  font-family: var(--font-monospace);
+  font-size: var(--font-smallest);
+  line-height: 1.4;
+  max-height: 55vh;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vault-sync-diff-add {
+  background: rgba(var(--color-green-rgb), 0.16);
+}
+
+.vault-sync-diff-del {
+  background: rgba(var(--color-red-rgb), 0.14);
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.vault-sync-diff-gap {
+  color: var(--text-faint);
+  text-align: center;
+  margin: var(--size-2-2) 0;
+}

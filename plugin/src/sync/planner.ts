@@ -5,7 +5,7 @@ import type { IndexEntry } from './index-store';
 // with paths already decrypted by the caller) and emits actions. No I/O, so
 // every case is unit-testable.
 //
-// Change detection is mtime+size vs the index (docs/sync-protocol.md);
+// Change detection is mtime+size vs the index (docs/explanation/sync-protocol.md);
 // external edits are caught because the scan covers the whole vault folder,
 // not just Obsidian events.
 
@@ -33,7 +33,7 @@ export type Action =
   | { kind: 'deleteLocal'; path: string; tombstoneId: string }
   | { kind: 'merge'; path: string; remoteRevisionId: string }
   | { kind: 'mergeHeads'; path: string; headIds: string[] }
-  | { kind: 'exclude'; path: string; reason: 'size' | 'category' } // stop syncing, never a delete
+  | { kind: 'exclude'; path: string; reason: 'size' | 'category' | 'scope' } // stop syncing, never a delete
   | { kind: 'forgetIndex'; path: string };
 
 export interface PlanInput {
@@ -44,6 +44,11 @@ export interface PlanInput {
   maxFileSizeBytes?: number;
   /** Selective-sync category filter; absent = everything syncs. */
   isCategoryExcluded?: (path: string) => boolean;
+  /**
+   * Structural scope filter (paths owned by another connection / config paths
+   * inside a mount); same stop-updating semantics, logged silently.
+   */
+  isScopeExcluded?: (path: string) => boolean;
 }
 
 export function planSync(input: PlanInput): Action[] {
@@ -68,18 +73,24 @@ export function planSync(input: PlanInput): Action[] {
       cap > 0 &&
       ((local !== undefined && local.size > cap) ||
         heads.some((h) => !h.deleted && h.sizeBytes > cap));
+    const scopeExcluded = input.isScopeExcluded?.(path) ?? false;
     const categoryExcluded = input.isCategoryExcluded?.(path) ?? false;
-    const excludedByPolicy = overCap || categoryExcluded;
+    const excludedByPolicy = overCap || scopeExcluded || categoryExcluded;
 
     if (idx?.excluded) {
       // Selective sync: divergence is expected while excluded. Re-inclusion
-      // (cap raised / category re-enabled) drops the entry so the file
-      // rejoins through the normal new-file/merge/conflict path next pass.
+      // (cap raised / category re-enabled / mount disconnected) drops the
+      // entry so the file rejoins through the normal new-file/merge/conflict
+      // path next pass.
       if (!excludedByPolicy) actions.push({ kind: 'forgetIndex', path });
       continue;
     }
     if (excludedByPolicy) {
-      actions.push({ kind: 'exclude', path, reason: overCap ? 'size' : 'category' });
+      actions.push({
+        kind: 'exclude',
+        path,
+        reason: overCap ? 'size' : scopeExcluded ? 'scope' : 'category',
+      });
       continue;
     }
 

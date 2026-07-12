@@ -4,6 +4,7 @@ import { loginRequestSchema, LoginResponse } from '@vault-sync/shared';
 import { generateToken, verifyPassword } from '../auth';
 import type { Config } from '../config';
 import type { Db } from '../store/db';
+import { resolvePasswordHash } from '../store/account';
 
 // Session tokens are deliberately LOCAL-ONLY state (no bucket sidecar):
 // losing the SQLite index just forces clients to re-login. Tokens are stored
@@ -15,10 +16,7 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export function registerAuth(
-  app: FastifyInstance,
-  deps: { config: Config; db: Db },
-): void {
+export function registerAuth(app: FastifyInstance, deps: { config: Config; db: Db }): void {
   app.decorateRequest('deviceId', '');
 
   app.addHook('onRequest', async (request, reply) => {
@@ -39,13 +37,18 @@ export function registerAuth(
   });
 
   app.post('/login', async (request, reply): Promise<LoginResponse> => {
-    if (!deps.config.ACCOUNT_PASSWORD_HASH) {
-      return reply
-        .code(503)
-        .send({ error: 'server has no ACCOUNT_PASSWORD_HASH configured' }) as never;
+    // Re-resolved per login so `admin set-password` (same volume, via docker
+    // exec) takes effect without a restart. Changing the password does NOT
+    // invalidate existing device tokens — evict devices with device-revoke.
+    const passwordHash = resolvePasswordHash(
+      deps.config.DATA_DIR,
+      deps.config.ACCOUNT_PASSWORD_HASH,
+    );
+    if (!passwordHash) {
+      return reply.code(503).send({ error: 'server has no account password configured' }) as never;
     }
     const body = loginRequestSchema.parse(request.body);
-    if (!(await verifyPassword(body.password, deps.config.ACCOUNT_PASSWORD_HASH))) {
+    if (!(await verifyPassword(body.password, passwordHash))) {
       return reply.code(401).send({ error: 'invalid password' }) as never;
     }
     const token = generateToken();
@@ -62,8 +65,7 @@ export function registerAuth(
 
 export function findDevice(db: Db, token: string): { id: string } | undefined {
   return db.prepare('SELECT id FROM device WHERE token_hash = ?').get(hashToken(token)) as
-    | { id: string }
-    | undefined;
+    { id: string } | undefined;
 }
 
 declare module 'fastify' {

@@ -20,6 +20,7 @@ import {
 import { planSync, Action, RemoteItem } from '../../plugin/src/sync/planner';
 import type { IndexEntry } from '../../plugin/src/sync/index-store';
 import { threeWayMerge } from '../../plugin/src/merge/diff3';
+import { isConfigPath, pickLwwHead } from '../../plugin/src/sync/config-categories';
 import { buildApp } from './app';
 import { loadConfig } from './config';
 import { openDb, Db } from './store/db';
@@ -80,8 +81,8 @@ class SimClient {
   }
 
   edit(path: string, mutate: (lines: string[]) => void): void {
-    const current = this.files.get(path)?.content ??
-      Array.from({ length: LINES }, (_, i) => `L${i}`).join('\n');
+    const current =
+      this.files.get(path)?.content ?? Array.from({ length: LINES }, (_, i) => `L${i}`).join('\n');
     const lines = current.split('\n');
     mutate(lines);
     this.files.set(path, { content: lines.join('\n'), mtime: this.clock() });
@@ -129,7 +130,12 @@ class SimClient {
     return head;
   }
 
-  private async pushContent(path: string, content: string, parentIds: string[]): Promise<string> {
+  async pushContent(
+    path: string,
+    content: string,
+    parentIds: string[],
+    clientMtime = new Date(0).toISOString(),
+  ): Promise<string> {
     const sodium = getSodium();
     const revisionId = crypto.randomUUID();
     const encryptor = createStreamEncryptor(this.keys.contentKey, revisionId);
@@ -145,7 +151,7 @@ class SimClient {
       encryptedPathB64: encryptPath(this.keys, path),
       parentIds,
       sizeBytes: content.length,
-      clientMtime: new Date(0).toISOString(),
+      clientMtime,
       deleted: false,
       chunks: 1,
       streamHeaderB64: encryptor.headerB64,
@@ -154,10 +160,7 @@ class SimClient {
   }
 
   private async readContent(revision: Revision): Promise<string> {
-    const res = await this.api(
-      'GET',
-      `/vaults/${this.vaultId}/blobs/${revision.id}/chunks/0`,
-    );
+    const res = await this.api('GET', `/vaults/${this.vaultId}/blobs/${revision.id}/chunks/0`);
     const decryptor = createStreamDecryptor(
       this.keys.contentKey,
       revision.id,
@@ -193,9 +196,14 @@ class SimClient {
   private async execute(action: Action): Promise<void> {
     switch (action.kind) {
       case 'push': {
-        const content = this.files.get(action.path)!.content;
-        const revisionId = await this.pushContent(action.path, content, action.parentIds);
-        this.setIndex(action.path, revisionId, content);
+        const file = this.files.get(action.path)!;
+        const revisionId = await this.pushContent(
+          action.path,
+          file.content,
+          action.parentIds,
+          new Date(file.mtime).toISOString(),
+        );
+        this.setIndex(action.path, revisionId, file.content);
         return;
       }
       case 'pushDelete': {
@@ -222,6 +230,41 @@ class SimClient {
         this.index.delete(action.path);
         return;
       case 'merge': {
+        if (isConfigPath(action.path)) {
+          // Mirror of engine.mergeConfigLww: push local as sibling head, then
+          // a merge revision citing both — winner by newest clientMtime.
+          const remoteHead = this.head(action.path, action.remoteRevisionId);
+          const file = this.files.get(action.path)!;
+          const parent = this.index.get(action.path)?.lastSyncedRevisionId;
+          const localMtime = new Date(file.mtime).toISOString();
+          const localRevisionId = await this.pushContent(
+            action.path,
+            file.content,
+            parent ? [parent] : [],
+            localMtime,
+          );
+          const localWins = file.mtime > Date.parse(remoteHead.clientMtime);
+          if (localWins) {
+            const mergeId = await this.pushContent(
+              action.path,
+              file.content,
+              [action.remoteRevisionId, localRevisionId],
+              localMtime,
+            );
+            this.setIndex(action.path, mergeId, file.content);
+          } else {
+            const remote = await this.readContent(remoteHead);
+            const mergeId = await this.pushContent(
+              action.path,
+              remote,
+              [action.remoteRevisionId, localRevisionId],
+              remoteHead.clientMtime,
+            );
+            this.files.set(action.path, { content: remote, mtime: this.clock() });
+            this.setIndex(action.path, mergeId, remote);
+          }
+          return;
+        }
         const remote = await this.readContent(this.head(action.path, action.remoteRevisionId));
         const base = this.index.get(action.path)?.basePlaintext;
         const local = this.files.get(action.path)!.content;
@@ -241,6 +284,28 @@ class SimClient {
         return;
       }
       case 'mergeHeads': {
+        if (isConfigPath(action.path)) {
+          // Mirror of the engine's config mergeHeads: deterministic LWW pick.
+          const heads = action.headIds.map((id) => this.head(action.path, id));
+          const winner = pickLwwHead(heads);
+          const content = await this.readContent(winner);
+          const revisionId = await this.pushContent(
+            action.path,
+            content,
+            action.headIds,
+            winner.clientMtime,
+          );
+          const idx = this.index.get(action.path);
+          const file = this.files.get(action.path);
+          const localChanged =
+            file !== undefined &&
+            (!idx || file.mtime !== idx.mtime || file.content.length !== idx.size);
+          if (!localChanged) {
+            this.files.set(action.path, { content, mtime: this.clock() });
+            this.setIndex(action.path, revisionId, content);
+          }
+          return;
+        }
         const texts: string[] = [];
         for (const id of action.headIds) {
           texts.push(await this.readContent(this.head(action.path, id)));
@@ -261,7 +326,8 @@ class SimClient {
         const idx = this.index.get(action.path);
         const file = this.files.get(action.path);
         const localChanged =
-          file !== undefined && (!idx || file.mtime !== idx.mtime || file.content.length !== idx.size);
+          file !== undefined &&
+          (!idx || file.mtime !== idx.mtime || file.content.length !== idx.size);
         if (!localChanged) {
           this.files.set(action.path, { content: merged, mtime: this.clock() });
           this.setIndex(action.path, revisionId, merged);
@@ -317,6 +383,88 @@ describe('convergence properties', () => {
     return clients;
   }
 
+  it('config paths converge by LWW: newest wins everywhere, loser stays in history', async () => {
+    const sodium = getSodium();
+    let now = 1_000_000;
+    const clock = () => (now += 1000);
+    const CFG = '.obsidian/app.json';
+
+    const keys = deriveVaultKeys(sodium.randombytes_buf(32));
+    const login = await app.inject({
+      method: 'POST',
+      url: '/login',
+      payload: { password: 'pw', deviceName: 'creator' },
+    });
+    const created = await app.inject({
+      method: 'POST',
+      url: '/vaults',
+      headers: { authorization: `Bearer ${login.json().token}` },
+      payload: {
+        encryptedNameB64: 'eA==',
+        kdf: {
+          algorithm: 'argon2id',
+          opsLimit: 3,
+          memLimitBytes: 8192,
+          saltB64: 'AAAAAAAAAAAAAAAAAAAAAA==',
+        },
+        wrappedVmkB64: 'eA==',
+      },
+    });
+    const vaultId = created.json().id as string;
+    const [a, b, c] = await makeClients(3, vaultId, keys, clock);
+
+    // Baseline: everyone has the same config file.
+    a!.edit(CFG, (lines) => (lines[0] = 'base'));
+    await a!.sync();
+    await b!.sync();
+    await c!.sync();
+
+    // Concurrent offline edits: A first, B later (B is the LWW winner).
+    a!.edit(CFG, (lines) => (lines[0] = 'from-A'));
+    b!.edit(CFG, (lines) => (lines[0] = 'from-B'));
+    await a!.sync(); // pushes A's version
+    await b!.sync(); // sees A's head, resolves by LWW → B wins
+    await a!.sync();
+    await c!.sync();
+
+    // INVARIANT 1: everyone converges on B's (newer) content, no conflict
+    // siblings under .obsidian.
+    for (const client of [a!, b!, c!]) {
+      expect(client.files.get(CFG)!.content).toContain('from-B');
+      expect([...client.files.keys()].filter((p) => p.includes('conflict'))).toEqual([]);
+    }
+
+    // INVARIANT 2: the losing version is a revision in history (rule 4).
+    const history = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/items/${pathHmac(keys.macKey, CFG)}/history`,
+      headers: { authorization: `Bearer ${login.json().token}` },
+    });
+    const contents: string[] = [];
+    for (const revision of history.json().revisions as Revision[]) {
+      if (!revision.deleted) contents.push(await c!['readContent'](revision));
+    }
+    expect(contents.some((text) => text.includes('from-A'))).toBe(true);
+    expect(contents.some((text) => text.includes('from-B'))).toBe(true);
+
+    // Concurrent heads (two revisions citing the same parent, e.g. two
+    // devices that pushed while mutually offline) collapse deterministically.
+    const heads = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/heads`,
+      headers: { authorization: `Bearer ${login.json().token}` },
+    });
+    const currentHead = (heads.json().items[0]!.heads as { id: string }[])[0]!.id;
+    await a!.pushContent(CFG, 'sibling-1', [currentHead], new Date(clock()).toISOString());
+    await b!.pushContent(CFG, 'sibling-2', [currentHead], new Date(clock()).toISOString());
+    await c!.sync(); // resolves the two heads by LWW (sibling-2 is newer)
+    await a!.sync();
+    await b!.sync();
+    for (const client of [a!, b!, c!]) {
+      expect(client.files.get(CFG)!.content).toBe('sibling-2');
+    }
+  }, 60_000);
+
   for (const seed of [1, 2, 3]) {
     it(`random offline edits on 3 clients converge with no lost content (seed ${seed})`, async () => {
       const rand = mulberry32(seed);
@@ -336,7 +484,12 @@ describe('convergence properties', () => {
         headers: { authorization: `Bearer ${login.json().token}` },
         payload: {
           encryptedNameB64: 'eA==',
-          kdf: { algorithm: 'argon2id', opsLimit: 3, memLimitBytes: 8192, saltB64: 'AAAAAAAAAAAAAAAAAAAAAA==' },
+          kdf: {
+            algorithm: 'argon2id',
+            opsLimit: 3,
+            memLimitBytes: 8192,
+            saltB64: 'AAAAAAAAAAAAAAAAAAAAAA==',
+          },
           wrappedVmkB64: 'eA==',
         },
       });
@@ -369,7 +522,9 @@ describe('convergence properties', () => {
         // INVARIANT 1: all clients agree on the full vault state.
         const snapshots = clients.map((c) =>
           JSON.stringify(
-            [...c.files.entries()].map(([p, f]) => [p, f.content]).sort((a, b) => (a[0]! < b[0]! ? -1 : 1)),
+            [...c.files.entries()]
+              .map(([p, f]) => [p, f.content])
+              .sort((a, b) => (a[0]! < b[0]! ? -1 : 1)),
           ),
         );
         expect(snapshots[1]).toBe(snapshots[0]);
@@ -389,7 +544,10 @@ describe('convergence properties', () => {
           headers: { authorization: `Bearer ${login.json().token}` },
         });
         const serverPaths = new Map<string, boolean>();
-        for (const item of res.json().items as { encryptedPathB64: string; heads: { deleted: boolean }[] }[]) {
+        for (const item of res.json().items as {
+          encryptedPathB64: string;
+          heads: { deleted: boolean }[];
+        }[]) {
           serverPaths.set(decryptPath(keys, item.encryptedPathB64), item.heads[0]!.deleted);
         }
         for (const [path] of reference.files) {

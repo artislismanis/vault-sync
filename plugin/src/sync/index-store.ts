@@ -20,11 +20,15 @@ export interface IndexEntry {
 
 export const BASE_CACHE_MAX_BYTES = 1024 * 1024;
 
+// Merge POLICY only — which files diff3-merge and cache a base. Independent
+// of selective-sync categories (categories.ts): a txt file is mergeable text
+// but excludable under the "other" toggle. 'base' is Obsidian Bases (YAML).
 const MERGEABLE_EXTENSIONS = new Set([
   'md',
   'txt',
   'json',
   'canvas',
+  'base',
   'csv',
   'yml',
   'yaml',
@@ -36,8 +40,6 @@ export function isMergeableText(path: string): boolean {
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
   return MERGEABLE_EXTENSIONS.has(ext);
 }
-
-export const MERGEABLE_EXTENSION_LIST: readonly string[] = [...MERGEABLE_EXTENSIONS].sort();
 
 export class IndexStore {
   private entries = new Map<string, IndexEntry>();

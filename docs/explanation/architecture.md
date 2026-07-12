@@ -44,8 +44,8 @@
 
 ## Deployment model
 
-See `docs/deployment.md` for the concrete Synology walkthrough (compose file,
-reverse proxy, BRAT device setup).
+See `docs/tutorials/getting-started.md` for the concrete Synology walkthrough
+(compose file, reverse proxy, BRAT device setup).
 
 - Primary: Docker container on Synology NAS (Container Manager), MinIO
   alongside. Compose file provided; nothing Synology-specific in the app.

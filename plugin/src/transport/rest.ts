@@ -7,6 +7,8 @@ import {
   historyResponseSchema,
   HealthResponse,
   healthResponseSchema,
+  ListDevicesResponse,
+  listDevicesResponseSchema,
   ListVaultsResponse,
   listVaultsResponseSchema,
   LoginResponse,
@@ -66,7 +68,9 @@ export class RestClient {
       } catch {
         // non-JSON error body
       }
-      throw new Error(`${options.method ?? 'GET'} ${options.path} failed (${res.status}) ${detail}`);
+      throw new Error(
+        `${options.method ?? 'GET'} ${options.path} failed (${res.status}) ${detail}`,
+      );
     }
     return {
       status: res.status,
@@ -92,6 +96,14 @@ export class RestClient {
     const parsed = loginResponseSchema.parse(res.json);
     this.token = parsed.token;
     return parsed;
+  }
+
+  async listDevices(): Promise<ListDevicesResponse> {
+    return listDevicesResponseSchema.parse((await this.request({ path: '/devices' })).json);
+  }
+
+  async renameDevice(name: string): Promise<void> {
+    await this.request({ path: '/devices/self', method: 'PATCH', json: { name } });
   }
 
   async listVaults(): Promise<ListVaultsResponse> {
@@ -129,7 +141,9 @@ export class RestClient {
   }
 
   async getChunk(vaultId: string, revisionId: string, seq: number): Promise<Uint8Array> {
-    const res = await this.request({ path: `/vaults/${vaultId}/blobs/${revisionId}/chunks/${seq}` });
+    const res = await this.request({
+      path: `/vaults/${vaultId}/blobs/${revisionId}/chunks/${seq}`,
+    });
     return new Uint8Array(res.arrayBuffer);
   }
 

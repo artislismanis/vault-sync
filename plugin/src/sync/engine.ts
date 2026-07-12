@@ -1,4 +1,3 @@
-import { normalizePath as obsidianNormalizePath, TFile, Vault } from 'obsidian';
 import {
   VaultKeys,
   decryptContent,
@@ -17,12 +16,18 @@ import type { RestClient } from '../transport/rest';
 import { IndexStore, isMergeableText, BASE_CACHE_MAX_BYTES } from './index-store';
 import { planSync, Action, LocalFile, RemoteItem } from './planner';
 import { ChunkSpool } from './spool';
+import { FileStat, SyncScope } from './scope';
+import { isConfigPath, pickLwwHead } from './config-categories';
 import { threeWayMerge } from '../merge/diff3';
 
 // Executes the planner's actions. Hard rule 4 discipline: every destructive
 // local operation goes through vault.trash (recoverable), every push cites
 // its parent (server history retains the prior version), and merge conflicts
 // always produce a conflict file — never a silent discard.
+//
+// The engine operates entirely in ENGINE-DOMAIN paths; all local file I/O
+// goes through the SyncScope seam (scope.ts), which owns the local↔engine
+// path mapping for the main vault, config dir, and folder-connection mounts.
 //
 // Memory discipline (blob format v2): content moves in 8 MiB secretstream
 // chunks, so crypto + transport cost O(chunk). The whole-file plaintext
@@ -40,7 +45,8 @@ const yieldMain = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export interface EngineOptions {
-  vault: Vault;
+  /** Local file I/O + path mapping; the engine never touches Vault directly. */
+  scope: SyncScope;
   rest: RestClient;
   keys: VaultKeys;
   vaultId: string;
@@ -68,6 +74,13 @@ export class SyncEngine {
   private running = false;
   private queued = false;
   private remoteHeadsByPath = new Map<string, ItemHeads>();
+  // Sizes snapshotted at scan time (sizeOf must stay synchronous).
+  private sizeByPath = new Map<string, number>();
+  // Set whenever the engine writes/deletes a config file; drives the single
+  // "reload to apply" notice per sync run.
+  private configPulled = false;
+  // Mount-folder-missing guard: notify once per transition, not per pass.
+  private rootMissingNotified = false;
 
   constructor(private opts: EngineOptions) {}
 
@@ -87,6 +100,11 @@ export class SyncEngine {
         this.queued = false;
         total += await this.fullSync();
       } while (this.queued);
+      if (this.configPulled) {
+        // Obsidian reads most config at app load; one notice per run.
+        this.configPulled = false;
+        this.opts.notify('vault-sync: Obsidian settings updated — reload to apply');
+      }
       return total;
     } finally {
       this.running = false;
@@ -110,7 +128,10 @@ export class SyncEngine {
 
       // Instant actions (index/tombstone bookkeeping) first, then transfers
       // through the worker pool, then merges (order-sensitive) sequentially.
-      const instant = actions.filter((a) => a.kind !== 'push' && a.kind !== 'pull' && a.kind !== 'merge' && a.kind !== 'mergeHeads');
+      const instant = actions.filter(
+        (a) =>
+          a.kind !== 'push' && a.kind !== 'pull' && a.kind !== 'merge' && a.kind !== 'mergeHeads',
+      );
       const transfers = actions.filter((a) => a.kind === 'push' || a.kind === 'pull');
       const merges = actions.filter((a) => a.kind === 'merge' || a.kind === 'mergeHeads');
 
@@ -187,7 +208,7 @@ export class SyncEngine {
   private sizeOf(action: Action): number {
     switch (action.kind) {
       case 'push':
-        return this.opts.vault.getFileByPath(action.path)?.stat.size ?? 0;
+        return this.sizeByPath.get(action.path) ?? 0;
       case 'pull':
       case 'merge':
       case 'mergeHeads': {
@@ -200,7 +221,23 @@ export class SyncEngine {
   }
 
   private async planOnce(): Promise<Action[]> {
-    const local = this.scanLocal();
+    // Mount-folder-missing guard (hard rule 4): if the connection's root
+    // folder vanished (deleted/renamed in the file explorer), skip the pass
+    // entirely — the planner must never see "everything deleted" and emit
+    // mass pushDeletes.
+    if (!(await this.opts.scope.isRootPresent())) {
+      if (!this.rootMissingNotified) {
+        this.rootMissingNotified = true;
+        this.opts.notify(
+          'vault-sync: connection folder is missing — sync paused for this connection ' +
+            "(recreate the folder or update the connection's local path in settings)",
+        );
+      }
+      return [];
+    }
+    this.rootMissingNotified = false;
+
+    const local = await this.scanLocal();
     const remote = await this.fetchRemote();
     // Spools for revisions that are no longer heads can never complete.
     const headIds = new Set<string>();
@@ -214,6 +251,7 @@ export class SyncEngine {
       remote,
       maxFileSizeBytes: this.opts.getMaxFileSizeBytes(),
       isCategoryExcluded: this.opts.isCategoryExcluded,
+      isScopeExcluded: (path) => this.opts.scope.isPolicyExcluded(path),
     });
   }
 
@@ -240,14 +278,25 @@ export class SyncEngine {
     await this.requestSync();
   }
 
-  private scanLocal(): LocalFile[] {
-    // vault.getFiles() covers every file in the vault folder (not .obsidian,
-    // not dot-dirs) regardless of how it got there — external edits included.
-    return this.opts.vault.getFiles().map((f) => ({
-      path: f.path,
-      mtime: f.stat.mtime,
-      size: f.stat.size,
-    }));
+  /** Fetch + decrypt a revision's full content — for the history preview UI. */
+  async readRevisionContent(revision: Revision): Promise<Uint8Array> {
+    return this.readBlob(revision);
+  }
+
+  /** Tracked canonical .obsidian paths — for the settings-history picker. */
+  syncedConfigPaths(): string[] {
+    return this.opts.index
+      .all()
+      .map((entry) => entry.path)
+      .filter(isConfigPath)
+      .sort();
+  }
+
+  private async scanLocal(): Promise<LocalFile[]> {
+    const local = await this.opts.scope.scan();
+    this.sizeByPath.clear();
+    for (const file of local) this.sizeByPath.set(file.path, file.size);
+    return local;
   }
 
   private async fetchRemote(): Promise<RemoteItem[]> {
@@ -407,18 +456,19 @@ export class SyncEngine {
   // --- push side ---------------------------------------------------------
 
   private async push(path: string, parentIds: string[]): Promise<void> {
-    const { vault } = this.opts;
-    const file = vault.getFileByPath(path);
-    if (!file) return; // vanished between scan and execution; next pass handles it
-    const plaintext = new Uint8Array(await vault.readBinary(file));
+    const { scope } = this.opts;
+    const stat = await scope.stat(path);
+    if (!stat) return; // vanished between scan and execution; next pass handles it
+    const plaintext = await scope.read(path);
+    if (!plaintext) return;
     const revisionId = await this.uploadContent(
       path,
       plaintext,
       parentIds,
-      new Date(file.stat.mtime).toISOString(),
+      new Date(stat.mtime).toISOString(),
     );
-    this.updateIndexAfterSync(path, file, plaintext, revisionId);
-    this.opts.log(`pushed ${path}`);
+    this.updateIndexAfterSync(path, stat, plaintext, revisionId);
+    this.opts.log(`pushed ${scope.toLocalPath(path)}`);
   }
 
   private async pushDelete(path: string, parentIds: string[]): Promise<void> {
@@ -440,73 +490,129 @@ export class SyncEngine {
 
   private async pull(path: string, revisionId: string): Promise<void> {
     const plaintext = await this.readBlob(this.findHead(path, revisionId));
-    const file = await this.writeLocal(path, plaintext);
-    this.updateIndexAfterSync(path, file, plaintext, revisionId);
-    this.opts.log(`pulled ${path}`);
+    const stat = await this.writeLocal(path, plaintext);
+    this.updateIndexAfterSync(path, stat, plaintext, revisionId);
+    this.opts.log(`pulled ${this.opts.scope.toLocalPath(path)}`);
   }
 
   private async deleteLocal(path: string): Promise<void> {
-    const file = this.opts.vault.getFileByPath(path);
-    if (file) {
-      this.applyingRemote = true;
-      try {
-        // Vault-local trash: recoverable, and .trash is outside getFiles().
-        await this.opts.vault.trash(file, false);
-      } finally {
-        this.applyingRemote = false;
-      }
+    this.applyingRemote = true;
+    try {
+      // Recoverable either way: vault files go to .trash; config files have
+      // their prior version as a revision in server history (hard rule 4).
+      await this.opts.scope.remove(path);
+      if (isConfigPath(path)) this.configPulled = true;
+    } finally {
+      this.applyingRemote = false;
     }
     this.opts.index.remove(path);
-    this.opts.log(`deleted ${path} (remote tombstone; local copy in .trash)`);
+    this.opts.log(
+      `deleted ${this.opts.scope.toLocalPath(path)} (remote tombstone; ` +
+        `${isConfigPath(path) ? 'prior version in server history' : 'local copy in .trash'})`,
+    );
   }
 
-  private exclude(path: string, reason: 'size' | 'category'): void {
-    const local = this.opts.vault.getFileByPath(path);
+  private exclude(path: string, reason: 'size' | 'category' | 'scope'): void {
     this.opts.index.set({
       path,
-      mtime: local?.stat.mtime ?? 0,
-      size: local?.stat.size ?? 0,
+      // Excluded entries only need the flag; the planner ignores their
+      // mtime/size until re-inclusion drops the entry entirely.
+      mtime: 0,
+      size: this.sizeByPath.get(path) ?? 0,
       lastSyncedRevisionId: null,
       excluded: true,
       basePlaintext: null,
     });
     if (reason === 'size') {
       const capMb = Math.round(this.opts.getMaxFileSizeBytes() / (1024 * 1024));
-      this.opts.notify(`vault-sync: "${path}" exceeds the ${capMb} MB size cap — not synced`);
+      this.opts.notify(
+        `vault-sync: "${this.opts.scope.toLocalPath(path)}" exceeds the ${capMb} MB size cap — not synced`,
+      );
     }
     // Category exclusions are a chosen setting — log only, no toast spam.
-    this.opts.log(`excluded ${path} (${reason})`);
+    // Scope exclusions (another connection owns the path) are fully silent.
+    if (reason !== 'scope')
+      this.opts.log(`excluded ${this.opts.scope.toLocalPath(path)} (${reason})`);
   }
 
   // --- merge side --------------------------------------------------------
 
   private async merge(path: string, remoteRevisionId: string): Promise<void> {
-    const { vault, index } = this.opts;
-    const file = vault.getFileByPath(path);
-    if (!file) return;
+    if (isConfigPath(path)) return this.mergeConfigLww(path, remoteRevisionId);
+    const { scope, index } = this.opts;
+    const localBytes = await scope.read(path);
+    if (!localBytes) return;
     const remoteBytes = await this.readBlob(this.findHead(path, remoteRevisionId));
     const base = index.get(path)?.basePlaintext;
 
     if (isMergeableText(path) && base != null) {
-      const localText = new TextDecoder().decode(new Uint8Array(await vault.readBinary(file)));
+      const localText = new TextDecoder().decode(localBytes);
       const remoteText = new TextDecoder().decode(remoteBytes);
       const result = threeWayMerge(base, localText, remoteText);
       if (result.ok) {
         const mergedBytes = new TextEncoder().encode(result.merged);
-        await this.writeLocal(path, mergedBytes);
+        const stat = await this.writeLocal(path, mergedBytes);
         const revisionId = await this.uploadContent(
           path,
           mergedBytes,
           [remoteRevisionId],
           new Date().toISOString(),
         );
-        const merged = vault.getFileByPath(path);
-        this.updateIndexAfterSync(path, merged, mergedBytes, revisionId);
-        this.opts.log(`merged ${path}`);
+        this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
+        this.opts.log(`merged ${scope.toLocalPath(path)}`);
         return;
       }
     }
-    await this.conflictFile(path, remoteBytes, remoteRevisionId);
+    await this.conflictFile(path, localBytes, remoteBytes, remoteRevisionId);
+  }
+
+  /**
+   * Config files resolve local-vs-remote conflicts by last-writer-wins, not
+   * diff3 (line-merging JSON breaks it) and never conflict siblings (a file
+   * inside .obsidian that Obsidian ignores IS the silent discard). Rule 4
+   * holds because BOTH versions become revisions: the local side is pushed
+   * as a sibling head first, then a merge revision citing both parents
+   * carries the winner. Recovery: version history UI. docs/decisions.md.
+   */
+  private async mergeConfigLww(path: string, remoteRevisionId: string): Promise<void> {
+    const { scope, index } = this.opts;
+    const stat = await scope.stat(path);
+    if (!stat) return; // vanished; next pass reconciles
+    const remoteHead = this.findHead(path, remoteRevisionId);
+    const localBytes = await scope.read(path);
+    if (!localBytes) return;
+    const localMtime = new Date(stat.mtime).toISOString();
+    const parent = index.get(path)?.lastSyncedRevisionId;
+    const localRevisionId = await this.uploadContent(
+      path,
+      localBytes,
+      parent ? [parent] : [],
+      localMtime,
+    );
+
+    const localWins = stat.mtime > Date.parse(remoteHead.clientMtime); // ties → remote
+    if (localWins) {
+      const mergeId = await this.uploadContent(
+        path,
+        localBytes,
+        [remoteRevisionId, localRevisionId],
+        localMtime,
+      );
+      this.updateIndexAfterSync(path, stat, localBytes, mergeId);
+    } else {
+      const remoteBytes = await this.readBlob(remoteHead);
+      const mergeId = await this.uploadContent(
+        path,
+        remoteBytes,
+        [remoteRevisionId, localRevisionId],
+        remoteHead.clientMtime,
+      );
+      const newStat = await this.writeLocal(path, remoteBytes);
+      this.updateIndexAfterSync(path, newStat, remoteBytes, mergeId);
+    }
+    this.opts.log(
+      `settings conflict on ${path} — ${localWins ? "this device's newer" : 'newer remote'} version kept; other in history`,
+    );
   }
 
   /**
@@ -515,22 +621,24 @@ export class SyncEngine {
    */
   private async conflictFile(
     path: string,
+    localBytes: Uint8Array | null,
     remoteBytes: Uint8Array,
     remoteRevisionId: string,
   ): Promise<void> {
-    const { vault } = this.opts;
-    const file = vault.getFileByPath(path);
-    if (file) {
-      const localBytes = new Uint8Array(await vault.readBinary(file));
-      const conflictPath = this.conflictPathFor(path);
+    if (localBytes) {
+      const conflictPath = await this.conflictPathFor(path);
       await this.writeLocal(conflictPath, localBytes);
     }
-    const remoteFile = await this.writeLocal(path, remoteBytes);
-    this.updateIndexAfterSync(path, remoteFile, remoteBytes, remoteRevisionId);
-    this.opts.log(`conflict on ${path} — local copy preserved as sibling`);
+    const remoteStat = await this.writeLocal(path, remoteBytes);
+    this.updateIndexAfterSync(path, remoteStat, remoteBytes, remoteRevisionId);
+    this.opts.log(
+      `conflict on ${this.opts.scope.toLocalPath(path)} — local copy preserved as sibling`,
+    );
   }
 
-  private conflictPathFor(path: string): string {
+  // Unreachable for config paths: merge()/mergeHeads() branch to LWW first.
+  // Engine-domain path in, engine-domain path out — the sibling syncs too.
+  private async conflictPathFor(path: string): Promise<string> {
     const date = new Date().toISOString().slice(0, 10);
     const device = this.opts.deviceName || 'device';
     const dot = path.lastIndexOf('.');
@@ -538,7 +646,7 @@ export class SyncEngine {
     const ext = dot === -1 ? '' : path.slice(dot);
     let candidate = `${stem} (conflict ${date} ${device})${ext}`;
     let counter = 2;
-    while (this.opts.vault.getFileByPath(obsidianNormalizePath(candidate))) {
+    while (await this.opts.scope.exists(candidate)) {
       candidate = `${stem} (conflict ${date} ${device} ${counter})${ext}`;
       counter++;
     }
@@ -547,6 +655,20 @@ export class SyncEngine {
 
   /** Merge concurrent remote heads into one revision citing all of them. */
   private async mergeHeads(path: string, headIds: string[]): Promise<void> {
+    if (isConfigPath(path)) {
+      // LWW across heads, deterministic on every device (see pickLwwHead).
+      // All losing heads stay in history; binary-safe (no text decode).
+      const heads = headIds.map((id) => this.findHead(path, id));
+      const winner = pickLwwHead(heads);
+      const bytes = await this.readBlob(winner);
+      const revisionId = await this.uploadContent(path, bytes, headIds, winner.clientMtime);
+      const stat = await this.writeLocalIfUnchanged(path, bytes);
+      if (stat) this.updateIndexAfterSync(path, stat, bytes, revisionId);
+      this.opts.log(
+        `settings LWW on ${path} — ${headIds.length} concurrent versions collapsed; others in history`,
+      );
+      return;
+    }
     const { index } = this.opts;
     const base = index.get(path)?.basePlaintext;
     const texts: string[] = [];
@@ -565,80 +687,61 @@ export class SyncEngine {
       // conflict sibling. All revisions remain in history regardless.
       merged = texts[texts.length - 1]!;
       for (const text of texts.slice(0, -1)) {
-        await this.writeLocal(this.conflictPathFor(path), new TextEncoder().encode(text));
+        await this.writeLocal(await this.conflictPathFor(path), new TextEncoder().encode(text));
       }
     }
 
     const mergedBytes = new TextEncoder().encode(merged);
-    const revisionId = await this.uploadContent(path, mergedBytes, headIds, new Date().toISOString());
+    const revisionId = await this.uploadContent(
+      path,
+      mergedBytes,
+      headIds,
+      new Date().toISOString(),
+    );
     // Local file (and any local divergence) reconciles against the new single
     // head on the next pass.
-    const file = await this.writeLocalIfUnchanged(path, mergedBytes);
-    if (file) this.updateIndexAfterSync(path, file, mergedBytes, revisionId);
-    this.opts.log(`merged ${headIds.length} concurrent heads of ${path}`);
+    const stat = await this.writeLocalIfUnchanged(path, mergedBytes);
+    if (stat) this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
+    this.opts.log(
+      `merged ${headIds.length} concurrent heads of ${this.opts.scope.toLocalPath(path)}`,
+    );
   }
 
   // --- helpers -----------------------------------------------------------
 
-  private async writeLocal(path: string, bytes: Uint8Array): Promise<TFile> {
-    const { vault } = this.opts;
-    const normalized = obsidianNormalizePath(path);
+  private async writeLocal(path: string, bytes: Uint8Array): Promise<FileStat> {
     this.applyingRemote = true;
     try {
-      await this.ensureParentFolders(normalized);
-      const existing = vault.getFileByPath(normalized);
-      // Avoid a full copy when the view already spans its whole buffer
-      // (always true for readBlob output — this matters at 500 MB).
-      const spansBuffer = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength;
-      const buffer = spansBuffer
-        ? (bytes.buffer as ArrayBuffer)
-        : (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
-      if (existing) {
-        await vault.modifyBinary(existing, buffer);
-        return existing;
-      }
-      return await vault.createBinary(normalized, buffer);
+      const stat = await this.opts.scope.write(path, bytes);
+      if (isConfigPath(path)) this.configPulled = true;
+      return stat;
     } finally {
       this.applyingRemote = false;
     }
   }
 
-  private async writeLocalIfUnchanged(path: string, bytes: Uint8Array): Promise<TFile | null> {
+  private async writeLocalIfUnchanged(path: string, bytes: Uint8Array): Promise<FileStat | null> {
     const idx = this.opts.index.get(path);
-    const file = this.opts.vault.getFileByPath(path);
+    const stat = await this.opts.scope.stat(path);
     const localChanged =
-      file !== null && (!idx || file.stat.mtime !== idx.mtime || file.stat.size !== idx.size);
+      stat !== null && (!idx || stat.mtime !== idx.mtime || stat.size !== idx.size);
     if (localChanged) return null;
     return this.writeLocal(path, bytes);
   }
 
-  private async ensureParentFolders(path: string): Promise<void> {
-    const parts = path.split('/').slice(0, -1);
-    if (parts.length === 0) return;
-    let current = '';
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!this.opts.vault.getFolderByPath(current)) {
-        try {
-          await this.opts.vault.createFolder(current);
-        } catch {
-          // races with Obsidian creating it are fine
-        }
-      }
-    }
-  }
-
   private updateIndexAfterSync(
     path: string,
-    file: TFile | null,
+    stat: FileStat | null,
     plaintext: Uint8Array,
     revisionId: string,
   ): void {
-    const cacheBase = isMergeableText(path) && plaintext.byteLength <= BASE_CACHE_MAX_BYTES;
+    // Config paths never cache a merge base: they resolve by LWW, not diff3.
+    const cacheBase =
+      isMergeableText(path) && !isConfigPath(path) && plaintext.byteLength <= BASE_CACHE_MAX_BYTES;
     this.opts.index.set({
       path,
-      mtime: file?.stat.mtime ?? Date.now(),
-      size: file?.stat.size ?? plaintext.byteLength,
+      mtime: stat?.mtime ?? Date.now(),
+      size: stat?.size ?? plaintext.byteLength,
       lastSyncedRevisionId: revisionId,
       excluded: false,
       basePlaintext: cacheBase ? new TextDecoder().decode(plaintext) : null,

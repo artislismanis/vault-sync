@@ -8,6 +8,7 @@ import type { ObjectStore } from './store/s3';
 import { Notifier } from './ws/notifier';
 import { registerAuth, findDevice } from './routes/auth';
 import { registerVaultRoutes } from './routes/vaults';
+import { registerDeviceRoutes } from './routes/devices';
 import { registerSyncRoutes } from './routes/sync';
 
 export interface AppDeps {
@@ -36,6 +37,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   });
 
   registerVaultRoutes(app, deps);
+  registerDeviceRoutes(app, deps);
   registerSyncRoutes(app, { ...deps, notifier });
 
   // Change-notification channel. Auth via ?token= (browsers/webviews can't

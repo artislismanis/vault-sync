@@ -216,11 +216,71 @@ describe('planSync', () => {
       ).toEqual([{ kind: 'push', path: 'a.md', parentIds: [] }]);
     });
 
+    it('settings-sync toggle-off stop-updates without deleting (config paths)', () => {
+      // Master toggle off is expressed via isCategoryExcluded returning true
+      // for config paths. Previously-synced config with a remote head must
+      // yield `exclude` — never pushDelete — even though the local scan no
+      // longer lists it (the config walk is skipped when disabled).
+      const configOff = (p: string) => p.startsWith('.obsidian/');
+      expect(
+        plan({
+          local: [], // config walk skipped when the toggle is off
+          index: [entry({ path: '.obsidian/app.json' })],
+          remote: [{ path: '.obsidian/app.json', heads: [head({ revisionId: 'rev-a' })] }],
+          isCategoryExcluded: configOff,
+        }),
+      ).toEqual([{ kind: 'exclude', path: '.obsidian/app.json', reason: 'category' }]);
+      // Remote-only config is never pulled while disabled.
+      expect(
+        plan({
+          remote: [{ path: '.obsidian/hotkeys.json', heads: [head({ revisionId: 'rev-h' })] }],
+          isCategoryExcluded: configOff,
+        }),
+      ).toEqual([{ kind: 'exclude', path: '.obsidian/hotkeys.json', reason: 'category' }]);
+      // Re-enabling rejoins through the normal merge/conflict path.
+      expect(
+        plan({
+          local: [{ path: '.obsidian/app.json', mtime: 9, size: 20 }],
+          index: [
+            entry({ path: '.obsidian/app.json', excluded: true, lastSyncedRevisionId: null }),
+          ],
+          isCategoryExcluded: () => false,
+        }),
+      ).toEqual([{ kind: 'forgetIndex', path: '.obsidian/app.json' }]);
+    });
+
+    it('mounted-folder scope exclusion stop-updates without deleting', () => {
+      // A previously main-synced file that a folder connection now owns:
+      // isScopeExcluded (not isCategoryExcluded) marks it excluded — never a
+      // delete — even with a remote head and no local scan entry (main's
+      // scan no longer covers the mounted subtree).
+      const mountOwns = (p: string) => p.startsWith('Reference/');
+      expect(
+        plan({
+          local: [],
+          index: [entry({ path: 'Reference/x.md' })],
+          remote: [{ path: 'Reference/x.md', heads: [head({ revisionId: 'rev-a' })] }],
+          isScopeExcluded: mountOwns,
+        }),
+      ).toEqual([{ kind: 'exclude', path: 'Reference/x.md', reason: 'scope' }]);
+      // Disconnecting the mount (scope filter drops) rejoins normally.
+      expect(
+        plan({
+          local: [{ path: 'Reference/x.md', mtime: 9, size: 20 }],
+          index: [entry({ path: 'Reference/x.md', excluded: true, lastSyncedRevisionId: null })],
+          isScopeExcluded: () => false,
+        }),
+      ).toEqual([{ kind: 'forgetIndex', path: 'Reference/x.md' }]);
+    });
+
     it('ignores the cap for tombstone heads and unlimited (0) settings', () => {
       expect(
         plan({
           remote: [
-            { path: 'gone.mp4', heads: [head({ revisionId: 'rev-t', deleted: true, sizeBytes: 500 })] },
+            {
+              path: 'gone.mp4',
+              heads: [head({ revisionId: 'rev-t', deleted: true, sizeBytes: 500 })],
+            },
           ],
           maxFileSizeBytes: CAP,
         }),

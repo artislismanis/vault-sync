@@ -2,7 +2,7 @@ import type { ObjectStore } from './s3';
 import type { Db } from './db';
 import { blobKey, chunkPrefix, revisionMetaKey } from './metadata-log';
 
-// Retention pruning (docs/sync-protocol.md "Version history"): removes old
+// Retention pruning (docs/explanation/sync-protocol.md "Version history"): removes old
 // NON-HEAD revisions — ciphertext blobs, metadata sidecars, and index rows —
 // operating purely on the revision DAG (no plaintext needed, E2EE intact).
 // Heads (including tombstone heads) are never pruned, so current state and

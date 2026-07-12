@@ -111,6 +111,13 @@ for cache misses. The cache itself is never synced.
 - Overlapping hunks or binary files → keep remote at path, write local as
   `Name (conflict YYYY-MM-DD device).md` sibling; both revisions retained.
 - Never discard either side silently under any circumstance.
+- Exception by design — `.obsidian` config items (settings sync): conflicts
+  resolve by last-writer-wins (newest clientMtime; ties by revision id).
+  Both versions still become revisions in the DAG, so nothing is
+  unrecoverable; there are just no conflict siblings inside `.obsidian` and
+  no diff3 on JSON. Protocol-wise these are ordinary encrypted items with a
+  canonical `.obsidian/` path prefix — only client-side policy differs
+  (docs/decisions.md 2026-07-12).
 
 ## Version history
 
@@ -122,7 +129,12 @@ for cache misses. The cache itself is never synced.
 ## Selective sync & ignores
 
 - Client-side filter before push: category toggles (image/audio/video/pdf/
-  other) + size cap. Filtered files are simply never uploaded.
+  other) + size cap. Filtered files are simply never uploaded. Categories
+  align with Obsidian's official format lists: the native trio (md, canvas,
+  base) always syncs; the media toggles use Obsidian's accepted extensions
+  verbatim; everything else — including mergeable text like txt/json/csv —
+  is "other". Merge eligibility (diff3) is a separate axis from
+  excludability.
 - Size cap (implemented 0.0.4): `maxFileSizeMB` per device, default 100 MB on
   mobile / unlimited on desktop. Oversized files (local or remote) are marked
   excluded in the sync index — never pushed, pulled, or deleted. Raising the
@@ -138,8 +150,33 @@ for cache misses. The cache itself is never synced.
   the last remote head. Exclusion is client-side policy only — invisible to
   the server (which couldn't evaluate filters under E2EE anyway).
 
+## Folder connections (mounted shared vaults)
+
+- A folder connection mounts another server vault ("shared vault") at a local
+  folder — e.g. a `Reference/` folder maintained in both a personal and a work
+  vault. Each connection is a **dedicated vault**: its own VMK envelope,
+  passphrase, and revision history. Zero protocol/server changes — a shared
+  vault is an ordinary vault; only the plugin's local path mapping differs.
+- Wire paths are **mount-relative**: the same shared vault's content is
+  addressed identically (`notes/x.md`) regardless of which local folder it's
+  mounted at in a given vault, exactly like the `.obsidian/` canonical prefix
+  above. Plugin-side, one `SyncEngine` instance per connection operates
+  entirely in this mount-relative domain; a filesystem seam maps to the local
+  folder.
+- The plugin's whole-vault connection treats every mounted prefix as
+  excluded-by-policy (same stop-updating machinery as a category toggle) —
+  pre-existing content at that path freezes rather than fighting the mount;
+  disconnecting reverses this and the files rejoin normal sync.
+- First connect join-merges existing local content with the shared vault
+  exactly like a second device joining a vault (identical files dedupe,
+  diverged text three-way-merges or conflict-siblings — nothing is lost).
+- Multiple folder connections sync **strictly sequentially**, preserving the
+  per-connection memory guarantees (single large transfer in flight, bounded
+  parallelism) without cross-connection locking.
+
 ## Non-goals in the protocol
 
 - No server-side merge, diff, dedup of plaintext, or search — impossible and
   undesired under E2EE.
-- No cross-vault or cross-user sharing semantics.
+- No cross-*user* sharing semantics (folder connections are one user mounting
+  their own additional vaults, not multi-user access control).

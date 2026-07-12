@@ -1,8 +1,9 @@
-# Deployment: Synology NAS
+# Getting started: deploy the server and sync your first vault
 
-Getting the sync server running on a Synology NAS behind HTTPS, and the
-plugin onto devices via BRAT. The server itself is host-generic — everything
-Synology-specific lives in this document.
+A complete first-time walkthrough: run the sync server (Synology NAS example)
+behind HTTPS, install the plugin via BRAT, and verify two devices converge.
+The server itself is host-generic — everything Synology-specific lives here,
+not in the app.
 
 ## Prerequisites
 
@@ -31,7 +32,8 @@ in `deploy/docker-compose.yml`) — there is deliberately no `env_file:`, so the
 same compose file works with the docker CLI, Container Manager, and Portainer.
 The variables are listed in `deploy/.env.example`; the required ones are
 `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `ACCOUNT_PASSWORD_HASH`
-(plus optional `S3_BUCKET`, `PUBLISH_PORT`, `LOG_LEVEL`).
+(plus optional `S3_BUCKET`, `PUBLISH_PORT`, `LOG_LEVEL`). Full variable
+reference: [../reference/server-config.md](../reference/server-config.md).
 
 First generate the account password hash (any machine with docker):
 
@@ -41,7 +43,9 @@ docker run --rm ghcr.io/artislismanis/vault-sync-server:latest \
 ```
 
 The output looks like `scrypt:16384:8:1:<base64>:<base64>` and is safe to put
-in env vars and `.env` files as-is.
+in env vars and `.env` files as-is. (To change the password later without
+touching env vars, see
+[../how-to/change-the-account-password.md](../how-to/change-the-account-password.md).)
 
 ## 3. Start — pick ONE of these
 
@@ -78,7 +82,8 @@ variables in the project's environment settings when prompted.
 
 Verify on the LAN: `curl http://<nas-ip>:8080/healthz` → `{"ok":true,"s3":"ok"}`.
 If `s3` is `unreachable`, fix the `S3_*` variables and redeploy. The startup
-log warns explicitly if `ACCOUNT_PASSWORD_HASH` is missing or malformed.
+log warns explicitly if no account password is configured, and states whether
+the active hash comes from the env var or from `admin set-password`.
 
 ## 4. HTTPS via reverse proxy
 
@@ -139,7 +144,9 @@ On every device (desktop and mobile):
 Onboarding (first device): Vault Sync settings → server URL
 `https://sync.<your-domain>` + device name → Log in → Create vault (name +
 E2EE passphrase). Additional devices: Log in → Refresh vault list → select
-vault → enter passphrase → Unlock.
+vault → enter passphrase → Unlock. Vaults you've unlocked before show their
+decrypted name in the list; others show only a creation date until unlocked
+(names are end-to-end encrypted).
 
 ## 6. Two-device convergence test
 
@@ -152,13 +159,9 @@ vault → enter passphrase → Unlock.
    `... (conflict YYYY-MM-DD device).md` sibling, nothing lost.
 4. Delete a note on one device → moves to `.trash` on the others.
 
-## Ongoing operations
+## Where next
 
-- **Update server**: `docker compose pull && docker compose up -d`.
-- **Update plugin**: tag a release (see CLAUDE.md); BRAT picks it up.
-- **Admin**: `docker compose exec vault-sync node dist/cli/admin.cjs vault-list`
-  (also `rebuild-index`, `hash-password`).
-- **Backup**: the S3 bucket is the complete server state. Restore = restore
-  bucket → start container → `rebuild-index`. The `vault-sync-data` volume is
-  an expendable cache.
-- **Logs**: `docker compose logs` (structured JSON to stdout).
+- Day-2 operations (updates, backup, devices, vault cleanup): the guides in
+  [../how-to/](../how-to/).
+- Every admin command with examples:
+  [../reference/admin-cli.md](../reference/admin-cli.md).

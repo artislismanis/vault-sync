@@ -8,9 +8,9 @@ Obsidian Sync, under your own control.
 **Status: alpha.** Working: E2EE sync (desktop + mobile), three-way merge
 with conflict files, delete propagation, chunked + resumable large-file
 transfers, parallel transfers, selective sync (size cap + file-type
-toggles), version history with restore, sync activity log, WebSocket push
-with polling fallback. Not yet in the community plugin directory — install
-via BRAT.
+toggles), version history with preview/diff/restore, `.obsidian` settings
+sync (opt-in, per-category), sync activity log, WebSocket push with polling
+fallback. Not yet in the community plugin directory — install via BRAT.
 
 ## Security model
 
@@ -25,7 +25,8 @@ recovery** — lose it and the data is gone.
 Docker image: `ghcr.io/artislismanis/vault-sync-server`. Needs any
 S3-compatible store (MinIO, S3, R2, …) — or run the bundled-MinIO compose
 profile. Full walkthrough (Synology NAS, reverse proxy, HTTPS):
-[docs/deployment.md](docs/deployment.md).
+[docs/tutorials/getting-started.md](docs/tutorials/getting-started.md).
+Day-2 operations and the admin CLI reference: [docs/README.md](docs/README.md).
 
 ## Plugin (via BRAT)
 
@@ -39,4 +40,5 @@ Works on desktop and mobile.
 
 npm workspaces monorepo: `server/` (Fastify), `plugin/` (Obsidian, esbuild),
 `shared/` (protocol schemas + crypto). See `CLAUDE.md` for commands and
-`docs/` for the spec, sync protocol, architecture, and decision log.
+[docs/README.md](docs/README.md) for the full documentation map (tutorial,
+how-to guides, reference, architecture/protocol, spec, decision log).

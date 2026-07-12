@@ -111,10 +111,37 @@ export function indexRevision(db: Db, record: RevisionRecord): void {
     streamHeaderB64: record.streamHeaderB64 ?? null,
   });
   // item.deleted caches the head state for cheap listing.
-  db.prepare('UPDATE item SET deleted = ? WHERE id = ?').run(
-    record.deleted ? 1 : 0,
-    record.itemId,
-  );
+  db.prepare('UPDATE item SET deleted = ? WHERE id = ?').run(record.deleted ? 1 : 0, record.itemId);
+}
+
+/**
+ * Permanently delete a vault: every sidecar, every blob, every index row.
+ * Crash-safe order — children first, the vault record LAST: rebuild-index
+ * enumerates vault records, so an interrupted run leaves a vault with missing
+ * children (still listed, still deletable), never orphaned children invisible
+ * to a rebuild.
+ */
+export async function deleteVault(
+  store: ObjectStore,
+  db: Db,
+  vaultId: string,
+): Promise<{ objects: number; revisions: number }> {
+  let objects = 0;
+  const prefixes = [`meta/${vaultId}/revisions/`, `meta/${vaultId}/items/`, `blobs/${vaultId}/`];
+  for (const prefix of prefixes) {
+    for (const key of await store.list(prefix)) {
+      await store.delete(key);
+      objects++;
+    }
+  }
+  await store.delete(vaultMetaKey(vaultId));
+  objects++;
+  const revisions = db
+    .prepare('DELETE FROM revision WHERE item_id IN (SELECT id FROM item WHERE vault_id = ?)')
+    .run(vaultId).changes;
+  db.prepare('DELETE FROM item WHERE vault_id = ?').run(vaultId);
+  db.prepare('DELETE FROM vault WHERE id = ?').run(vaultId);
+  return { objects, revisions };
 }
 
 /** Rebuild the SQLite index from the bucket's sidecars. Wipes derived tables first. */

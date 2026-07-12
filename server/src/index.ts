@@ -1,6 +1,7 @@
 import { loadConfig } from './config';
 import { openDb } from './store/db';
 import { createObjectStore } from './store/s3';
+import { passwordHashSource, resolvePasswordHash } from './store/account';
 import { buildApp } from './app';
 
 async function main(): Promise<void> {
@@ -9,11 +10,19 @@ async function main(): Promise<void> {
   const store = createObjectStore(config);
   const app = await buildApp({ config, db, store });
 
-  if (!config.ACCOUNT_PASSWORD_HASH) {
-    app.log.warn('ACCOUNT_PASSWORD_HASH not set — logins are disabled');
-  } else if (!config.ACCOUNT_PASSWORD_HASH.startsWith('scrypt:')) {
+  const source = passwordHashSource(config.DATA_DIR, config.ACCOUNT_PASSWORD_HASH);
+  const hash = resolvePasswordHash(config.DATA_DIR, config.ACCOUNT_PASSWORD_HASH);
+  if (source === 'none') {
     app.log.warn(
-      'ACCOUNT_PASSWORD_HASH looks malformed (expected "scrypt:...") — regenerate with the admin hash-password command',
+      'no account password configured (env or admin set-password) — logins are disabled',
+    );
+  } else if (!hash!.startsWith('scrypt:')) {
+    app.log.warn(
+      `account password hash (from ${source}) looks malformed (expected "scrypt:...") — regenerate with the admin hash-password command`,
+    );
+  } else {
+    app.log.info(
+      `account password hash: from ${source === 'file' ? 'DATA_DIR/account.json (set-password)' : 'env'}`,
     );
   }
 

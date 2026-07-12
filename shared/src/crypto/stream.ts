@@ -2,7 +2,7 @@ import { getSodium } from './sodium';
 
 // Blob format v2: chunked streaming encryption via crypto_secretstream
 // (XChaCha20-Poly1305 with a ratcheting key). Memory stays O(chunk) on both
-// ends — the whole point (docs/sync-protocol.md "Blob format v2").
+// ends — the whole point (docs/explanation/sync-protocol.md "Blob format v2").
 //
 // - 8 MiB plaintext chunks, each +17 bytes AEAD overhead.
 // - The 24-byte stream header travels in revision metadata (streamHeaderB64,

@@ -1,4 +1,4 @@
-# Vault Sync server deployment. See docs/deployment.md for the full
+# Vault Sync server deployment. See docs/tutorials/getting-started.md for the full
 # Synology walkthrough (SSH, Container Manager, and Portainer variants).
 #
 # Configuration comes from compose interpolation variables, NOT env_file —

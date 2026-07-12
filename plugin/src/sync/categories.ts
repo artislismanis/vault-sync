@@ -1,15 +1,23 @@
-import { isMergeableText } from './index-store';
+// Selective-sync categories, aligned exactly with Obsidian's official format
+// support (obsidian.md/help/file-formats). Native formats are NEVER
+// excludable; the media categories use Obsidian's accepted-extension lists
+// verbatim; everything else — including text formats like txt/json/csv that
+// still diff3-merge (see index-store.ts) — is 'other'. Category (what syncs)
+// and merge policy (how conflicts resolve) are independent axes.
 
-// Selective-sync categories (parity with Obsidian Sync's type toggles).
-// Notes/text are NEVER excludable — category filtering applies only to
-// attachments.
+export type FileCategory = 'native' | 'image' | 'audio' | 'video' | 'pdf' | 'other';
+export type ExcludableCategory = Exclude<FileCategory, 'native'>;
 
-export type FileCategory = 'note' | 'image' | 'audio' | 'video' | 'pdf' | 'other';
-export type ExcludableCategory = Exclude<FileCategory, 'note'>;
+// Obsidian's native trio: Markdown, JSON Canvas, Bases.
+const NATIVE = new Set(['md', 'canvas', 'base']);
 
-const IMAGE = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'avif', 'heic', 'heif']);
-const AUDIO = new Set(['mp3', 'wav', 'm4a', 'ogg', 'oga', 'flac', 'aac', '3gp', 'opus']);
-const VIDEO = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v']);
+const IMAGE = new Set(['avif', 'bmp', 'gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
+const AUDIO = new Set(['flac', 'm4a', 'mp3', 'ogg', 'wav', '3gp']);
+// Obsidian lists webm under both audio and video; the container is classified
+// video here, so the Video toggle governs webm files.
+const VIDEO = new Set(['mkv', 'mov', 'mp4', 'ogv', 'webm']);
+
+export const NATIVE_EXTENSION_LIST: readonly string[] = [...NATIVE].sort();
 
 /** Extension lists per toggleable category, for settings UI copy. */
 export const CATEGORY_EXTENSIONS: Record<'image' | 'audio' | 'video' | 'pdf', readonly string[]> = {
@@ -20,8 +28,8 @@ export const CATEGORY_EXTENSIONS: Record<'image' | 'audio' | 'video' | 'pdf', re
 };
 
 export function categoryOf(path: string): FileCategory {
-  if (isMergeableText(path)) return 'note';
   const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  if (NATIVE.has(ext)) return 'native';
   if (IMAGE.has(ext)) return 'image';
   if (AUDIO.has(ext)) return 'audio';
   if (VIDEO.has(ext)) return 'video';
@@ -47,5 +55,5 @@ export const DEFAULT_CATEGORY_TOGGLES: CategoryToggles = {
 
 export function isCategoryExcluded(path: string, toggles: CategoryToggles): boolean {
   const category = categoryOf(path);
-  return category === 'note' ? false : !toggles[category];
+  return category === 'native' ? false : !toggles[category];
 }

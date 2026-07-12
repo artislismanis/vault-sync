@@ -30,6 +30,24 @@ export const loginResponseSchema = z.object({
   deviceId: deviceIdSchema,
 });
 
+// Device names are user-supplied plaintext the server already stores (set at
+// login); listing them to the single user's own authenticated devices adds no
+// exposure. token_hash never appears in any response.
+export const deviceInfoSchema = z.object({
+  id: deviceIdSchema,
+  name: z.string(),
+  createdAt: z.iso.datetime(),
+  lastSeen: z.iso.datetime(),
+});
+
+export const listDevicesResponseSchema = z.object({
+  devices: z.array(deviceInfoSchema),
+});
+
+export const renameDeviceRequestSchema = z.object({
+  name: z.string().min(1).max(64),
+});
+
 export const createVaultRequestSchema = z.object({
   encryptedNameB64: z.string(),
   kdf: kdfParamsSchema,
@@ -106,6 +124,9 @@ export type KdfParams = z.infer<typeof kdfParamsSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 export type LoginResponse = z.infer<typeof loginResponseSchema>;
+export type DeviceInfo = z.infer<typeof deviceInfoSchema>;
+export type ListDevicesResponse = z.infer<typeof listDevicesResponseSchema>;
+export type RenameDeviceRequest = z.infer<typeof renameDeviceRequestSchema>;
 export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
 export type VaultSummary = z.infer<typeof vaultSummarySchema>;
 export type ListVaultsResponse = z.infer<typeof listVaultsResponseSchema>;

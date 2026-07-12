@@ -7,9 +7,14 @@ rough feature parity. Single user, multiple vaults. Working name — rename free
 ## Read these before designing or building anything
 
 - `docs/mvp-spec.md` — scope, phases, parity checklist. The source of truth for WHAT to build.
-- `docs/sync-protocol.md` — E2EE model, versioning, merge strategy. Read before touching sync logic.
-- `docs/architecture.md` — components, storage layout, deployment model.
+- `docs/explanation/sync-protocol.md` — E2EE model, versioning, merge strategy. Read before touching sync logic.
+- `docs/explanation/architecture.md` — components, storage layout, deployment model.
 - `docs/decisions.md` — decision log (ADR-style). APPEND to this whenever a significant choice is made or changed. Never silently contradict it.
+
+`docs/` follows Diátaxis (see `docs/README.md`): user-facing docs go in
+`tutorials/`, `how-to/`, `reference/`, or `explanation/`; the spec and
+decision log stay at the root. Keep `docs/reference/admin-cli.md` in sync
+with CLI changes.
 
 ## Repo layout
 
@@ -30,7 +35,10 @@ docs/      Specs and decisions (see above)
 - Server dev: `npm run dev -w server` — reads S3 endpoint/credentials from `../.env`
   (copy `.env.example`; point at any S3-compatible store). `docker-compose.dev.yml`
   is an OPTIONAL throwaway MinIO for integration testing only.
-- Admin CLI: `npm run -w server admin -- <hash-password|vault-list|rebuild-index>`
+- Admin CLI: `npm run -w server admin -- <command>` — status, set-password,
+  hash-password, vault-list, vault-delete, rebuild-index, gc-blobs, prune,
+  storage-usage, device-list, device-rename, device-revoke
+  (full reference: `docs/reference/admin-cli.md`)
 - Plugin dev build: `npm run dev -w plugin` (watch mode; set `OUTFILE=<vault>/.obsidian/plugins/vault-sync/main.js` to build into a test vault)
 - Plugin release build: `npm run build -w plugin` → `plugin/main.js`
 - Release (plugin + server image): `npm version patch -w plugin -w server`
