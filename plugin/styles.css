@@ -24,6 +24,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--size-4-1);
+  border-bottom: 1px solid var(--background-modifier-border);
   margin-bottom: var(--size-4-2);
 }
 
@@ -36,7 +37,38 @@
 .vault-sync-history-tabs {
   display: flex;
   gap: var(--size-4-1);
+  border-bottom: 1px solid var(--background-modifier-border);
   margin-bottom: var(--size-4-2);
+}
+
+/* Underline-tab treatment shared by the settings tab bar and the version
+   history modal's tab bar (borrowed from obsidian-agent-sandbox). */
+.vault-sync-settings-tab,
+.vault-sync-history-tab {
+  padding: var(--size-4-1) var(--size-4-3);
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.vault-sync-settings-tab:hover,
+.vault-sync-history-tab:hover {
+  color: var(--text-normal);
+}
+
+.vault-sync-settings-tab.is-active,
+.vault-sync-history-tab.is-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+}
+
+.vault-sync-history-tab:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .vault-sync-history-pane {

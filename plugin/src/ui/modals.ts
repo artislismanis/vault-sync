@@ -115,9 +115,9 @@ export class HistoryModal extends Modal {
       ];
       if (!views.find((v) => v.key === this.view)?.enabled) this.view = 'preview';
       for (const { key, label, enabled } of views) {
-        const button = tabs.createEl('button', { text: label });
+        const button = tabs.createEl('button', { text: label, cls: 'vault-sync-history-tab' });
         button.disabled = !enabled;
-        button.toggleClass('mod-cta', this.view === key);
+        button.toggleClass('is-active', this.view === key);
         button.addEventListener('click', () => {
           this.view = key;
           this.render();

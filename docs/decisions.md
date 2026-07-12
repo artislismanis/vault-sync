@@ -533,3 +533,52 @@ escape hatch); and after a rename, other devices show the cached old name until
 they refresh the vault list or re-unlock. Management targets only the connected
 main vault for now — renaming/deleting arbitrary listed vaults is a later
 extension. `admin vault-delete`/`vault-list` are unchanged.
+
+**2026-07-12 — Added `docs/roadmap.md`: a prioritised, sourced backlog
+referencing (not forking) the spec's phases.** A survey of eight comparable
+Obsidian-sync projects (Osync-p, vaultguard-obsidian, obsidian-ugreen-sync,
+obsidian-conflict-manager, ObsidianGoogleDriveSync, obsyncian,
+pkv-sync-plugin, nas-sync-plugin) plus obsidian-agent-sandbox produced a long
+backlog of borrowable patterns. Five candidates ("do we already do this?")
+were verified against the code first and turned out already implemented
+(`diff3.ts` `excludeFalseConflicts`, size+mtime change detection, self-write
+suppression, renderer yielding, poison isolation) — no hidden correctness gap
+existed, so the roadmap records them as settled rather than backlog. The
+remaining items are tiered: Tier 1 ships without further discussion; Tier 2
+(presigned direct-to-storage blob URLs; at-rest encryption of the local
+merge-base cache) each carry a real cost — a second internet-exposed storage
+endpoint, and a desktop-only mechanism respectively — and need their own
+decision entry before being built, not a default yes; Tier 3 cross-references
+`mvp-spec.md`'s existing Phase 3+ list rather than replacing it. `roadmap.md`
+is execution order and provenance; `mvp-spec.md` stays the scope source of
+truth — if a Tier 2/3 item ever changes scope, update both together.
+**Rules out**: a parallel/competing phase list; adopting either Tier 2 item
+without first appending its own dated decision here.
+
+**2026-07-12 — Tighter Synology integration assessed and kept docs-only.**
+Same survey included a NAS-integration pass. Conclusion: nothing warrants
+application code — this **reaffirms** the 2026-07-11 host-generic decision
+above. Findings landed entirely on the deployment side and are captured in
+the new `docs/how-to/deploy-on-synology.md`: Container Manager as a
+first-class click-through path (the compose file is already `env_file`-free
+specifically to support it), `/volume1/docker/...` volume-path and
+port-conflict conventions, consolidating the existing reverse-proxy/WebSocket
+header/DNS-01 guidance, and DSM's Push Service webhooks as a delivery
+mechanism for the security-event notification idea in `roadmap.md`. Synology
+C2 Object Storage is noted only as a validated **cloud** S3 target for the
+existing swap-to-cloud path (DSM has no native on-box S3-compatible service
+of its own) — untested against our server, no code implication either way.
+**Rules out**: any Synology API calls, DSM package, or storage/auth coupling
+in the server or plugin; WebDAV as a storage option (the contract stays
+strictly S3, per the 2026-07-11 storage decision).
+
+**2026-07-12 — Settings tab bar and version-history modal tab bar restyled
+to underline tabs.** Replaced the `mod-cta` filled-button active-state
+(`plugin/src/settings.ts` `renderTabBar`, `plugin/src/ui/modals.ts`'s
+`HistoryModal` view tabs) with a flat button + accent-colored bottom border
+on the active tab (`.vault-sync-settings-tab`/`.vault-sync-history-tab` +
+`.is-active` in `plugin/styles.css`), borrowed from the owner's
+obsidian-agent-sandbox (`sandbox-settings-tab`/`is-active`). Presentational
+only — the `display()`/`render()` re-render model and tab-switching logic are
+unchanged. **Rules out**: nothing structural; purely a shared CSS class swap
+across both tab bars so they read as one consistent pattern.

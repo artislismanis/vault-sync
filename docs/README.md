@@ -20,6 +20,8 @@ looking up, understanding.
 - [Delete a vault](how-to/delete-a-vault.md)
 - [Back up and restore](how-to/back-up-and-restore.md)
 - [Update server and plugin](how-to/update-server-and-plugin.md)
+- [Deploy on Synology](how-to/deploy-on-synology.md) — Container Manager
+  conventions, reverse proxy details, storage options
 
 ## Reference — look things up
 
@@ -38,6 +40,7 @@ looking up, understanding.
 
 - [mvp-spec.md](mvp-spec.md) — scope, phases, parity checklist (the WHAT)
 - [decisions.md](decisions.md) — append-only decision log (ADR-style)
+- [roadmap.md](roadmap.md) — prioritised backlog with provenance (the ORDER)
 
 New user-facing documentation goes in the matching Diátaxis folder; the spec
 and decision log stay at the root.

@@ -145,8 +145,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private renderTabBar(containerEl: HTMLElement): void {
     const bar = containerEl.createDiv({ cls: 'vault-sync-settings-tabs' });
     for (const { id, label } of TABS) {
-      const button = bar.createEl('button', { text: label });
-      button.toggleClass('mod-cta', id === this.activeTab);
+      const button = bar.createEl('button', { text: label, cls: 'vault-sync-settings-tab' });
+      button.toggleClass('is-active', id === this.activeTab);
       button.addEventListener('click', () => {
         this.activeTab = id;
         this.display();
