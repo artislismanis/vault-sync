@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 // rebuildable at any time via `admin rebuild-index`. Never the source of
 // truth (docs/decisions.md); losing this file must lose nothing.
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS vault (
@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS vault (
   encrypted_name_b64 TEXT NOT NULL,
   kdf_json      TEXT NOT NULL,
   wrapped_vmk_b64 TEXT NOT NULL,
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL,
+  kind          TEXT NOT NULL DEFAULT 'vault'
 );
 CREATE TABLE IF NOT EXISTS item (
   id            TEXT PRIMARY KEY,
@@ -56,10 +57,17 @@ export function openDb(dataDir: string): Db {
   const version = db.pragma('user_version', { simple: true }) as number;
   if (version < 1) {
     db.exec(SCHEMA);
-  } else if (version < 2) {
-    // v2: blob format v2 metadata (chunk count + secretstream header).
-    db.exec('ALTER TABLE revision ADD COLUMN chunks INTEGER;');
-    db.exec('ALTER TABLE revision ADD COLUMN stream_header_b64 TEXT;');
+  } else {
+    // Sequential migrations: an old DB may need several in a row.
+    if (version < 2) {
+      // v2: blob format v2 metadata (chunk count + secretstream header).
+      db.exec('ALTER TABLE revision ADD COLUMN chunks INTEGER;');
+      db.exec('ALTER TABLE revision ADD COLUMN stream_header_b64 TEXT;');
+    }
+    if (version < 3) {
+      // v3: vault kind (full vault vs folder-share), for dropdown filtering.
+      db.exec("ALTER TABLE vault ADD COLUMN kind TEXT NOT NULL DEFAULT 'vault';");
+    }
   }
   if (version < SCHEMA_VERSION) {
     db.pragma(`user_version = ${SCHEMA_VERSION}`);

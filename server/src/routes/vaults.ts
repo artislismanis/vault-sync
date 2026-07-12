@@ -14,6 +14,7 @@ interface VaultRow {
   kdf_json: string;
   wrapped_vmk_b64: string;
   created_at: string;
+  kind: VaultSummary['kind'];
 }
 
 export function registerVaultRoutes(
@@ -30,6 +31,7 @@ export function registerVaultRoutes(
           kdf: JSON.parse(row.kdf_json),
           wrappedVmkB64: row.wrapped_vmk_b64,
           createdAt: row.created_at,
+          kind: row.kind ?? 'vault',
         }),
       ),
     };
@@ -43,6 +45,7 @@ export function registerVaultRoutes(
       kdfJson: JSON.stringify(body.kdf),
       wrappedVmkB64: body.wrappedVmkB64,
       createdAt: new Date().toISOString(),
+      kind: body.kind,
     };
     // Write-ahead: bucket sidecar first, index second, ack last.
     await writeVaultSidecar(deps.store, record);

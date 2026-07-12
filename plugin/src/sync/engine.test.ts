@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { VaultKeys } from '@vault-sync/shared';
 import type { RestClient } from '../transport/rest';
-import { SyncEngine } from './engine';
+import { SyncEngine, contentIdentical } from './engine';
 import { IndexStore } from './index-store';
 import { ChunkSpool, SpoolFs } from './spool';
 import type { SyncScope } from './scope';
@@ -114,5 +114,36 @@ describe('engine root-missing guard', () => {
     await engine.requestSync();
     expect(headsCalls).toBe(1); // proceeded past the guard
     expect(notices).toHaveLength(1); // no new notice on recovery
+  });
+});
+
+// The reconnect no-op: disconnecting a folder connection drops its sync index,
+// so on reconnect merge() sees base == null and would fall to conflictFile()
+// for an unchanged file. contentIdentical is the guard that adopts the remote
+// revision instead of spawning a spurious "(conflict ...)" sibling.
+describe('contentIdentical', () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+
+  it('treats byte-identical content as identical', () => {
+    expect(contentIdentical('notes/a.md', enc('# hello\n'), enc('# hello\n'))).toBe(true);
+  });
+
+  it('folds CRLF vs LF for mergeable text', () => {
+    expect(contentIdentical('notes/a.md', enc('a\r\nb\r\n'), enc('a\nb\n'))).toBe(true);
+  });
+
+  it('folds Unicode normalization for mergeable text', () => {
+    const nfc = 'caf\u00e9'; // é as one codepoint (NFC)
+    const nfd = 'cafe\u0301'; // e + combining acute accent (NFD)
+    expect(contentIdentical('notes/a.md', enc(nfc), enc(nfd))).toBe(true);
+  });
+
+  it('reports genuinely diverged text as different', () => {
+    expect(contentIdentical('notes/a.md', enc('a\nb\n'), enc('a\nc\n'))).toBe(false);
+  });
+
+  it('does not normalize non-mergeable (binary) paths — only exact bytes count', () => {
+    expect(contentIdentical('img/x.png', enc('a\r\nb'), enc('a\nb'))).toBe(false);
+    expect(contentIdentical('img/x.png', enc('abc'), enc('abc'))).toBe(true);
   });
 });

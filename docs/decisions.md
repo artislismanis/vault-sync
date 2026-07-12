@@ -474,3 +474,37 @@ children. One-time change-source registrations (vault events, periodic
 rescan, visibility, polling) moved from the per-connection rebuild path
 into `onload`, fixing a latent bug where they'd have stacked duplicate
 handlers on every reconnect.
+
+**2026-07-12 — Vaults carry a server-visible `kind` (`'vault' | 'folder'`);
+identical content adopts instead of conflicting.** Two fixes to the folder-
+connection feature. (1) A folder-share is an ordinary server vault, so the
+settings dropdowns offered *every* account vault as a folder-connection
+candidate (and folder shares as whole-vault candidates). A device that has not
+unlocked a vault can't read its encrypted name, so the distinction can't be
+client-only — it must be legible pre-unlock. We add a `kind` enum to the vault
+record (schema, `vault` table with an idempotent `ALTER TABLE` migration to v3,
+bucket sidecar, `GET/POST /vaults`), defaulting to `'vault'`; the "Create a new
+shared vault" flow marks `'folder'`. This does **not** weaken E2EE (hard rule
+1): `kind` is structural classification, not file content, names, or paths, and
+not key material — the same category as `createdAt`/`kdf` the server already
+holds, consistent with the device-name precedent. Sidecars written before v3
+have no `kind` and rebuild as `'vault'`, so `rebuild-index` stays lossless. The
+"Connect to existing vault" dropdown now shows only `'vault'`, "Add folder
+connection" only `'folder'`. (2) Disconnecting a folder connection drops its
+local sync index; on reconnect `merge()` saw `base == null`, skipped the three-
+way merge, and wrote a `(conflict ...)` sibling even for a byte-identical file
+that never diverged. `merge()`/`mergeHeads()` now short-circuit on identical
+content (byte equality, plus newline- and NFC-normalized equality for mergeable
+text): adopt the remote revision and re-seed `basePlaintext` so the next real
+edit has a merge base again. This makes good on the "identical files: no-op"
+promise the docs already stated. Nothing changes on the wire for the merge fix.
+
+**2026-07-12 — Settings vault list auto-refreshes once per pane open.** The
+"Add folder connection" / "Connect to existing vault" dropdowns are populated
+by `loadVaults()`, previously called only at login and via a manual "Refresh
+vault list" button — so a share created moments earlier (on this vault, another
+vault, or another device) was invisible until a manual refresh, which read as
+"the vault can't see its own share". The connection tab now fires one
+`loadVaults()` per pane open (guarded against the render→load→render loop,
+reset in `hide()`), and create/connect/disconnect re-fetch the list. The manual
+button stays as a force-refresh with a clarifying tooltip.

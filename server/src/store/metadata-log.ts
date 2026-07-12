@@ -1,3 +1,4 @@
+import type { VaultKind } from '@vault-sync/shared';
 import type { ObjectStore } from './s3';
 import type { Db } from './db';
 
@@ -18,6 +19,8 @@ export interface VaultRecord {
   kdfJson: string;
   wrappedVmkB64: string;
   createdAt: string;
+  // Absent in sidecars written before v3; defaulted to 'vault' on read.
+  kind?: VaultKind;
 }
 
 export interface ItemRecord {
@@ -85,9 +88,9 @@ export async function writeRevisionSidecar(
 
 export function indexVault(db: Db, record: VaultRecord): void {
   db.prepare(
-    `INSERT OR REPLACE INTO vault (id, encrypted_name_b64, kdf_json, wrapped_vmk_b64, created_at)
-     VALUES (@id, @encryptedNameB64, @kdfJson, @wrappedVmkB64, @createdAt)`,
-  ).run(record);
+    `INSERT OR REPLACE INTO vault (id, encrypted_name_b64, kdf_json, wrapped_vmk_b64, created_at, kind)
+     VALUES (@id, @encryptedNameB64, @kdfJson, @wrappedVmkB64, @createdAt, @kind)`,
+  ).run({ ...record, kind: record.kind ?? 'vault' });
 }
 
 export function indexItem(db: Db, record: ItemRecord): void {

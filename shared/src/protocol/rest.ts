@@ -48,10 +48,17 @@ export const renameDeviceRequestSchema = z.object({
   name: z.string().min(1).max(64),
 });
 
+// Structural, non-secret vault classification. Lets a device that has not
+// unlocked a vault still tell a folder-share ("folder") from a full vault
+// ("vault") so the settings dropdowns can offer the right candidates. Not
+// plaintext content/names/paths — no E2EE weakening (docs/decisions.md).
+export const vaultKindSchema = z.enum(['vault', 'folder']).default('vault');
+
 export const createVaultRequestSchema = z.object({
   encryptedNameB64: z.string(),
   kdf: kdfParamsSchema,
   wrappedVmkB64: z.string(),
+  kind: vaultKindSchema,
 });
 
 export const vaultSummarySchema = z.object({
@@ -60,6 +67,7 @@ export const vaultSummarySchema = z.object({
   kdf: kdfParamsSchema,
   wrappedVmkB64: z.string(),
   createdAt: z.iso.datetime(),
+  kind: vaultKindSchema,
 });
 
 export const listVaultsResponseSchema = z.object({
@@ -127,6 +135,7 @@ export type LoginResponse = z.infer<typeof loginResponseSchema>;
 export type DeviceInfo = z.infer<typeof deviceInfoSchema>;
 export type ListDevicesResponse = z.infer<typeof listDevicesResponseSchema>;
 export type RenameDeviceRequest = z.infer<typeof renameDeviceRequestSchema>;
+export type VaultKind = z.infer<typeof vaultKindSchema>;
 export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
 export type VaultSummary = z.infer<typeof vaultSummarySchema>;
 export type ListVaultsResponse = z.infer<typeof listVaultsResponseSchema>;

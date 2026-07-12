@@ -7,6 +7,7 @@ import {
   generateVmk,
   getSodium,
   unwrapVmk,
+  VaultKind,
   VaultSummary,
   WrongPassphraseError,
 } from '@vault-sync/shared';
@@ -105,6 +106,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   // Session-persistent: this.display() re-renders (after login/unlock/create)
   // land back on the tab the user was on.
   private activeTab: SettingsTabId = 'connection';
+  // One vault-list fetch per pane open (reset in hide()); stops the
+  // render → loadVaults → render cycle from looping.
+  private vaultsRefreshedThisOpen = false;
 
   constructor(
     app: App,
@@ -121,6 +125,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (this.activeTab === 'connection') this.renderConnectionTab(body);
     else if (this.activeTab === 'vaultSync') this.renderVaultSyncTab(body);
     else this.renderSettingsSyncTab(body);
+  }
+
+  hide(): void {
+    this.vaultsRefreshedThisOpen = false;
+    super.hide();
+  }
+
+  /** Reload the vault list and re-render; fall back to a plain re-render offline. */
+  private async refreshVaultsAndRender(): Promise<void> {
+    try {
+      await this.loadVaults();
+    } catch {
+      this.display();
+    }
   }
 
   private renderTabBar(containerEl: HTMLElement): void {
@@ -215,6 +233,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       );
 
     if (!settings.token) return;
+
+    // Refresh the vault list once per pane open so vaults created/disconnected
+    // in another vault or on another device show up without a manual refresh.
+    // The guard stops loadVaults()'s re-render from re-triggering the fetch.
+    if (!this.vaultsRefreshedThisOpen) {
+      this.vaultsRefreshedThisOpen = true;
+      void this.loadVaults().catch(() => {});
+    }
 
     // --- Vault selection ---------------------------------------------------
     const vaultSection = containerEl.createDiv();
@@ -388,6 +414,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private async createVaultOnServer(
     name: string,
     passphrase: string,
+    kind: VaultKind,
   ): Promise<{ vaultId: string; vmkB64: string; vaultName: string }> {
     const settings = this.plugin.settings;
     const vmk = generateVmk();
@@ -398,6 +425,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       encryptedNameB64: encryptVaultName(keys, name),
       kdf: envelope.kdf,
       wrappedVmkB64: envelope.wrappedVmkB64,
+      kind,
     });
     const sodium = getSodium();
     return {
@@ -429,16 +457,22 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       );
     }
     connected.addButton((button) =>
-      button.setButtonText('Refresh vault list').onClick(async () => {
-        try {
-          await this.loadVaults();
-        } catch (err) {
-          new Notice(`vault-sync: ${(err as Error).message}`);
-        }
-      }),
+      button
+        .setButtonText('Refresh vault list')
+        .setTooltip('The list refreshes automatically when settings open; use this to force it now')
+        .onClick(async () => {
+          try {
+            await this.loadVaults();
+          } catch (err) {
+            new Notice(`vault-sync: ${(err as Error).message}`);
+          }
+        }),
     );
 
-    if (this.vaults.length > 0) {
+    // Full vaults only — folder-share vaults are mounted from the Folder
+    // connections section below, not opened as a whole vault.
+    const fullVaults = this.vaults.filter((v) => v.kind !== 'folder');
+    if (fullVaults.length > 0) {
       let passphrase = '';
       const setting = new Setting(containerEl)
         .setName('Connect to existing vault')
@@ -447,14 +481,14 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             'vaults unlocked before on this device show their name.',
         );
       setting.addDropdown((dropdown) => {
-        for (const vault of this.vaults) {
+        for (const vault of fullVaults) {
           dropdown.addOption(
             vault.id,
             settings.knownVaultNames[vault.id] ??
               `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
           );
         }
-        this.selectedVaultId = this.vaults[0]?.id ?? null;
+        this.selectedVaultId = fullVaults[0]?.id ?? null;
         dropdown.onChange((value) => (this.selectedVaultId = value));
       });
       setting.addText((text) => {
@@ -509,6 +543,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           const { vaultId, vmkB64, vaultName } = await this.createVaultOnServer(
             newName,
             newPassphrase,
+            'vault',
           );
           settings.vaultId = vaultId;
           settings.vmkB64 = vmkB64;
@@ -577,7 +612,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               'the shared vault is untouched',
           );
           await this.plugin.startSync();
-          this.display();
+          await this.refreshVaultsAndRender();
         }),
       );
     }
@@ -585,7 +620,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (this.vaults.length > 0) {
       const connectableVaults = this.vaults.filter(
         (v) =>
-          v.id !== settings.vaultId && !settings.folderConnections.some((c) => c.vaultId === v.id),
+          v.kind === 'folder' &&
+          v.id !== settings.vaultId &&
+          !settings.folderConnections.some((c) => c.vaultId === v.id),
       );
       if (connectableVaults.length > 0) {
         let passphrase = '';
@@ -682,7 +719,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           return;
         }
         try {
-          const created = await this.createVaultOnServer(newName, newPassphrase);
+          const created = await this.createVaultOnServer(newName, newPassphrase, 'folder');
           await this.addFolderConnection(created, normalized);
         } catch (err) {
           new Notice(`vault-sync: ${(err as Error).message}`);
@@ -712,7 +749,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       `vault-sync: connected "${unlocked.vaultName}" at ${localPath}/ — existing files will merge with the shared vault`,
     );
     await this.plugin.startSync();
-    this.display();
+    await this.refreshVaultsAndRender();
   }
 
   /** Best-effort cleanup of a disconnected connection's local sync state. */

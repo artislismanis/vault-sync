@@ -20,6 +20,26 @@ import { FileStat, SyncScope } from './scope';
 import { isConfigPath, pickLwwHead } from './config-categories';
 import { threeWayMerge } from '../merge/diff3';
 
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * True when local and remote should be treated as the same content and merged
+ * to a no-op. Byte-identical always counts; for mergeable text we also fold
+ * line-ending and Unicode-normalization differences so a file that round-tripped
+ * through two vaults doesn't spawn a conflict sibling on reconnect.
+ */
+export function contentIdentical(path: string, a: Uint8Array, b: Uint8Array): boolean {
+  if (bytesEqual(a, b)) return true;
+  if (!isMergeableText(path)) return false;
+  const norm = (bytes: Uint8Array) =>
+    new TextDecoder().decode(bytes).normalize('NFC').replace(/\r\n/g, '\n');
+  return norm(a) === norm(b);
+}
+
 // Executes the planner's actions. Hard rule 4 discipline: every destructive
 // local operation goes through vault.trash (recoverable), every push cites
 // its parent (server history retains the prior version), and merge conflicts
@@ -543,6 +563,20 @@ export class SyncEngine {
     const localBytes = await scope.read(path);
     if (!localBytes) return;
     const remoteBytes = await this.readBlob(this.findHead(path, remoteRevisionId));
+
+    // Identical content (common after disconnect→reconnect, which drops the
+    // sync index): adopt the remote revision as our synced state — no write,
+    // no push, no conflict. Without this the null-base case below falls
+    // straight to conflictFile() and spawns a spurious sibling for a file
+    // that never actually diverged. updateIndexAfterSync also re-seeds
+    // basePlaintext, so the next real edit has a merge base again.
+    if (contentIdentical(path, localBytes, remoteBytes)) {
+      const stat = await scope.stat(path);
+      this.updateIndexAfterSync(path, stat, localBytes, remoteRevisionId);
+      this.opts.log(`adopted ${scope.toLocalPath(path)} (identical)`);
+      return;
+    }
+
     const base = index.get(path)?.basePlaintext;
 
     if (isMergeableText(path) && base != null) {
@@ -684,9 +718,13 @@ export class SyncEngine {
 
     if (merged == null) {
       // Unmergeable: newest head wins the path, every other head becomes a
-      // conflict sibling. All revisions remain in history regardless.
+      // conflict sibling — but only if it actually differs from the winner,
+      // so identical concurrent heads collapse instead of spawning siblings.
       merged = texts[texts.length - 1]!;
+      const seen = new Set<string>([merged]);
       for (const text of texts.slice(0, -1)) {
+        if (seen.has(text)) continue;
+        seen.add(text);
         await this.writeLocal(await this.conflictPathFor(path), new TextEncoder().encode(text));
       }
     }

@@ -22,23 +22,35 @@ In the vault that already has the content (or will):
 3. Click **Create**. If the folder already has files in it, they upload to
    the new shared vault.
 
+Creating a shared vault **immediately mounts it in this vault too** — the
+originating vault is just the first mount, not a special "owner". The folder
+now appears under **Folder connections**, and it can be disconnected and
+reconnected here exactly like on any other vault.
+
 ## Connect the second vault
 
 In the other vault:
 
 1. Settings → **Connection** tab, log in with the same account, then
-   **Folder connections** → pick the shared vault from the dropdown (it
-   appears once you refresh the vault list), enter its passphrase, and the
-   local folder to use in *this* vault — it doesn't have to match the first
-   vault's folder name, e.g. `Shared/Reference`.
+   **Folder connections** → pick the shared vault from the dropdown, enter
+   its passphrase, and the local folder to use in *this* vault — it doesn't
+   have to match the first vault's folder name, e.g. `Shared/Reference`.
 2. Click **Connect**.
+
+The dropdown lists only folder-share vaults (full vaults are opened from the
+**Vault** section instead), and it refreshes automatically when you open
+settings — a share created moments ago on another vault or device appears
+without any manual step. There's still a **Refresh vault list** button if you
+want to force it.
 
 ### If this vault already has its own copy of the folder
 
 Nothing to do differently — existing files merge automatically, exactly
 like a second device joining a vault:
 
-- Identical files on both sides: no-op.
+- Identical files on both sides: no-op — including after you disconnect and
+  later reconnect a folder whose files never changed. (Files that differ only
+  by line endings or Unicode normalization also count as identical here.)
 - The same file edited differently on each side (and it's a mergeable text
   file): merged automatically.
 - Anything else that conflicts: both versions are kept — the newer one at
