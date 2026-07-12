@@ -61,6 +61,19 @@ export const createVaultRequestSchema = z.object({
   kind: vaultKindSchema,
 });
 
+export const updateVaultRequestSchema = z
+  .object({
+    encryptedNameB64: z.string().optional(), // rename
+    kdf: kdfParamsSchema.optional(), // passphrase change …
+    wrappedVmkB64: z.string().optional(), // … (both together)
+  })
+  .refine((v) => v.encryptedNameB64 !== undefined || (v.kdf && v.wrappedVmkB64), {
+    message: 'update must rename or change passphrase',
+  })
+  .refine((v) => (v.kdf === undefined) === (v.wrappedVmkB64 === undefined), {
+    message: 'kdf and wrappedVmkB64 must be set together',
+  });
+
 export const vaultSummarySchema = z.object({
   id: vaultIdSchema,
   encryptedNameB64: z.string(),
@@ -137,6 +150,7 @@ export type ListDevicesResponse = z.infer<typeof listDevicesResponseSchema>;
 export type RenameDeviceRequest = z.infer<typeof renameDeviceRequestSchema>;
 export type VaultKind = z.infer<typeof vaultKindSchema>;
 export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
+export type UpdateVaultRequest = z.infer<typeof updateVaultRequestSchema>;
 export type VaultSummary = z.infer<typeof vaultSummarySchema>;
 export type ListVaultsResponse = z.infer<typeof listVaultsResponseSchema>;
 export type Revision = z.infer<typeof revisionSchema>;

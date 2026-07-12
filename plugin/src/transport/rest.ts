@@ -16,6 +16,7 @@ import {
   PushRevisionRequest,
   Revision,
   revisionSchema,
+  UpdateVaultRequest,
 } from '@vault-sync/shared';
 
 // REST client. Uses Obsidian's requestUrl (not fetch): it bypasses webview
@@ -113,6 +114,14 @@ export class RestClient {
   async createVault(request: CreateVaultRequest): Promise<{ id: string }> {
     const res = await this.request({ path: '/vaults', method: 'POST', json: request });
     return res.json as { id: string };
+  }
+
+  async updateVault(vaultId: string, patch: UpdateVaultRequest): Promise<void> {
+    await this.request({ path: `/vaults/${vaultId}`, method: 'PATCH', json: patch });
+  }
+
+  async deleteVault(vaultId: string): Promise<void> {
+    await this.request({ path: `/vaults/${vaultId}`, method: 'DELETE' });
   }
 
   async heads(vaultId: string): Promise<HeadsResponse> {

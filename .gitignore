@@ -1,6 +1,6 @@
+# Build output
 node_modules/
 dist/
-coverage/
 *.tsbuildinfo
 
 # plugin build artifact (attached to releases, not committed)
@@ -10,5 +10,68 @@ plugin/main.js
 server/data/
 data/
 
+# Coverage
+coverage/
+
+# env (`.env` matches at any depth, covers deploy/.env too)
 .env
+
+# IDE
+.idea
+.vscode
+
+# OS
 .DS_Store
+Thumbs.db
+*:Zone.Identifier
+
+# Editor swap / backup files
+*.swp
+*.swo
+*~
+
+# Package manager debug logs
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local cache directories
+.cache/
+
+# Claude Code sandbox masking layer bind-mounts /dev/null over these
+# host-config paths inside the sandbox. They appear as untracked
+# character devices in `git status` but can never be committed.
+.bashrc
+.bash_profile
+.profile
+.zshrc
+.zprofile
+.gitconfig
+.gitmodules
+.ripgreprc
+
+# ── Claude Code ──────────────────────────────────────────
+# Policy: project .claude/ config is shared by default (deny-list).
+# Only runtime state and personal/local files are ignored below.
+# See: https://code.claude.com/docs/en/claude-directory
+
+# Sub-package .claude/ dirs aren't real config — only the monorepo root is
+plugin/.claude/
+server/.claude/
+shared/.claude/
+
+# Runtime state (any .claude/ at any depth)
+**/.claude/worktrees/
+**/.claude/.cc-writes/
+**/.claude/routines/
+**/.claude/launch.json
+**/.claude/scheduled_tasks.*
+
+# Local-only subagent memory (memory: local)
+**/.claude/agent-memory-local/
+
+# Personal/local overrides (Anthropic's .local. convention)
+**/.claude/*.local.json
+**/.claude/*.local.md
+CLAUDE.local.md
+tmux-*.log
