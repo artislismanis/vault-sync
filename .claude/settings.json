@@ -1,0 +1,17 @@
+{
+    "model": "opusplan",
+    "advisorModel": "opus",
+    "effortLevel": "high",
+    "permissions": {
+        "defaultMode": "auto"
+    },
+    "prefersReducedMotion": true,
+    "statusLine": {
+        "type": "command",
+        "command": "bash .claude/scripts/statusline.sh"
+    },
+    "enableAllProjectMcpServers": true,
+    "enabledMcpjsonServers": [
+        "github"
+    ]
+}
