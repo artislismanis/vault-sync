@@ -6,6 +6,7 @@ import {
   encryptVaultName,
   generateVmk,
   getSodium,
+  rewrapVmk,
   unwrapVmk,
   VaultKind,
   VaultSummary,
@@ -569,9 +570,254 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             .setCta()
             .onClick(() => this.plugin.syncNow()),
         );
+      this.renderManageVault(containerEl);
     }
 
     this.renderFolderConnections(containerEl);
+  }
+
+  /**
+   * Lifecycle controls for the connected main vault: rename, change passphrase,
+   * disconnect (local only), delete (server-side). Edit/delete are gated on the
+   * vault passphrase (verified client-side via unwrapVmk); the server only ever
+   * sees the re-encrypted name / re-wrapped VMK / a delete by id.
+   */
+  private renderManageVault(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    const vaultId = settings.vaultId;
+    if (!vaultId) return;
+
+    new Setting(containerEl)
+      .setName('Manage vault')
+      .setDesc(
+        'Rename, change passphrase, or delete this vault. Edit and delete need ' +
+          'the current passphrase. Refresh the vault list if these do nothing.',
+      )
+      .setHeading();
+
+    // The current server envelope (kdf, wrapped VMK, encrypted name) — needed to
+    // verify the passphrase and to re-encrypt. Absent until the list is loaded.
+    const summary = (): VaultSummary | undefined =>
+      this.vaults.find((v) => v.id === vaultId);
+    const requireSummary = (): VaultSummary | null => {
+      const s = summary();
+      if (!s) {
+        new Notice('vault-sync: refresh the vault list first');
+        return null;
+      }
+      return s;
+    };
+
+    // --- Rename ---------------------------------------------------------------
+    {
+      let newName = '';
+      let passphrase = '';
+      const rename = new Setting(containerEl).setName('Rename vault');
+      rename.addText((text) => text.setPlaceholder('new name').onChange((v) => (newName = v)));
+      rename.addText((text) => {
+        text.inputEl.type = 'password';
+        text.setPlaceholder('passphrase').onChange((v) => (passphrase = v));
+      });
+      rename.addButton((button) =>
+        button.setButtonText('Rename').onClick(async () => {
+          const s = requireSummary();
+          if (!s) return;
+          if (!newName) {
+            new Notice('vault-sync: enter a new name');
+            return;
+          }
+          try {
+            const vmk = unwrapVmk({ kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 }, passphrase);
+            const encryptedNameB64 = encryptVaultName(deriveVaultKeys(vmk), newName);
+            await new RestClient(settings.serverUrl, settings.token).updateVault(vaultId, {
+              encryptedNameB64,
+            });
+            settings.vaultName = newName;
+            settings.knownVaultNames[vaultId] = newName;
+            await this.plugin.saveSettings();
+            new Notice(`vault-sync: renamed to "${newName}"`);
+            await this.refreshVaultsAndRender();
+          } catch (err) {
+            new Notice(
+              err instanceof WrongPassphraseError
+                ? 'vault-sync: wrong passphrase'
+                : `vault-sync: ${(err as Error).message}`,
+            );
+          }
+        }),
+      );
+    }
+
+    // --- Change passphrase ----------------------------------------------------
+    {
+      let oldPassphrase = '';
+      let newPassphrase = '';
+      const change = new Setting(containerEl)
+        .setName('Change passphrase')
+        .setDesc('Re-wraps the vault key. Other devices need the new passphrase to unlock.');
+      change.addText((text) => {
+        text.inputEl.type = 'password';
+        text.setPlaceholder('current passphrase').onChange((v) => (oldPassphrase = v));
+      });
+      change.addText((text) => {
+        text.inputEl.type = 'password';
+        text.setPlaceholder('new passphrase').onChange((v) => (newPassphrase = v));
+      });
+      change.addButton((button) =>
+        button.setButtonText('Change').onClick(async () => {
+          const s = requireSummary();
+          if (!s) return;
+          if (newPassphrase.length < 8) {
+            new Notice('vault-sync: new passphrase must be 8+ characters');
+            return;
+          }
+          try {
+            const envelope = rewrapVmk(
+              { kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 },
+              oldPassphrase,
+              newPassphrase,
+            );
+            await new RestClient(settings.serverUrl, settings.token).updateVault(vaultId, {
+              kdf: envelope.kdf,
+              wrappedVmkB64: envelope.wrappedVmkB64,
+            });
+            // VMK unchanged: cached vmkB64 and the live connection keep working.
+            new Notice('vault-sync: passphrase changed');
+            await this.refreshVaultsAndRender();
+          } catch (err) {
+            new Notice(
+              err instanceof WrongPassphraseError
+                ? 'vault-sync: wrong current passphrase'
+                : `vault-sync: ${(err as Error).message}`,
+            );
+          }
+        }),
+      );
+    }
+
+    // --- Disconnect (local only, no passphrase) -------------------------------
+    this.renderDisconnectVault(containerEl, vaultId);
+
+    // --- Delete (server-side, passphrase + typed confirm) ---------------------
+    this.renderDeleteVault(containerEl, vaultId, requireSummary);
+  }
+
+  /** Two-step inline confirm; clears local connection state, leaves files and the server vault. */
+  private renderDisconnectVault(containerEl: HTMLElement, vaultId: string): void {
+    const settings = this.plugin.settings;
+    const disconnect = new Setting(containerEl)
+      .setName('Disconnect vault')
+      .setDesc('Stops syncing on this device. Files stay in the vault; the server vault is untouched.');
+    disconnect.addButton((button) =>
+      button.setButtonText('Disconnect').onClick(() => {
+        disconnect.clear();
+        disconnect.setName('Disconnect this vault?');
+        disconnect.addButton((confirm) =>
+          confirm
+            .setButtonText('Disconnect')
+            .setWarning()
+            .onClick(async () => {
+              confirm.setDisabled(true);
+              settings.vaultId = null;
+              settings.vmkB64 = null;
+              settings.vaultName = null;
+              await this.plugin.saveSettings();
+              await this.forgetConnectionState(vaultId);
+              new Notice('vault-sync: disconnected — files stay put, the server vault is untouched');
+              await this.plugin.startSync();
+              await this.refreshVaultsAndRender();
+            }),
+        );
+        disconnect.addButton((cancel) =>
+          cancel.setButtonText('Cancel').onClick(() => {
+            disconnect.settingEl.remove();
+            this.renderDisconnectVault(containerEl, vaultId);
+          }),
+        );
+      }),
+    );
+  }
+
+  /** Passphrase + typed confirmation, then a two-step inline confirm. Irreversible. */
+  private renderDeleteVault(
+    containerEl: HTMLElement,
+    vaultId: string,
+    requireSummary: () => VaultSummary | null,
+  ): void {
+    const settings = this.plugin.settings;
+    let passphrase = '';
+    let typed = '';
+    const del = new Setting(containerEl)
+      .setName('Delete vault')
+      .setDesc(
+        'Permanently deletes the vault and all its history on the server. Cannot be undone. ' +
+          'Enter the passphrase and type the vault name (or "delete") to confirm.',
+      );
+    del.addText((text) => {
+      text.inputEl.type = 'password';
+      text.setPlaceholder('passphrase').onChange((v) => (passphrase = v));
+    });
+    del.addText((text) =>
+      text.setPlaceholder('vault name or "delete"').onChange((v) => (typed = v)),
+    );
+    del.addButton((button) =>
+      button
+        .setButtonText('Delete')
+        .setWarning()
+        .onClick(() => {
+          const s = requireSummary();
+          if (!s) return;
+          const confirmMatches =
+            typed === settings.vaultName || typed.trim().toLowerCase() === 'delete';
+          if (!confirmMatches) {
+            new Notice('vault-sync: type the vault name or "delete" to confirm');
+            return;
+          }
+          try {
+            // Verify the passphrase before offering the irreversible step.
+            unwrapVmk({ kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 }, passphrase);
+          } catch (err) {
+            new Notice(
+              err instanceof WrongPassphraseError
+                ? 'vault-sync: wrong passphrase'
+                : `vault-sync: ${(err as Error).message}`,
+            );
+            return;
+          }
+          const name = settings.vaultName ?? `vault ${vaultId.slice(0, 8)}…`;
+          del.clear();
+          del.setName(`Permanently delete "${name}"?`);
+          del.setDesc('This cannot be undone.');
+          del.addButton((confirm) =>
+            confirm
+              .setButtonText('Delete forever')
+              .setWarning()
+              .onClick(async () => {
+                confirm.setDisabled(true);
+                try {
+                  await new RestClient(settings.serverUrl, settings.token).deleteVault(vaultId);
+                  settings.vaultId = null;
+                  settings.vmkB64 = null;
+                  settings.vaultName = null;
+                  await this.plugin.saveSettings();
+                  await this.forgetConnectionState(vaultId);
+                  new Notice(`vault-sync: deleted "${name}"`);
+                  await this.plugin.startSync();
+                  await this.refreshVaultsAndRender();
+                } catch (err) {
+                  new Notice(`vault-sync: ${(err as Error).message}`);
+                  confirm.setDisabled(false);
+                }
+              }),
+          );
+          del.addButton((cancel) =>
+            cancel.setButtonText('Cancel').onClick(() => {
+              del.settingEl.remove();
+              this.renderDeleteVault(containerEl, vaultId, requireSummary);
+            }),
+          );
+        }),
+    );
   }
 
   // --- Folder connections: mount other server vaults at local folders -----

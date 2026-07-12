@@ -508,3 +508,28 @@ vault, or another device) was invisible until a manual refresh, which read as
 `loadVaults()` per pane open (guarded against the render→load→render loop,
 reset in `hide()`), and create/connect/disconnect re-fetch the list. The manual
 button stays as a force-refresh with a clarifying tooltip.
+
+**2026-07-12 — Plugin-side vault management (disconnect, rename, change
+passphrase, delete).** The connection tab gains a "Manage vault" section for the
+connected main vault, backed by two new authenticated server routes
+(`PATCH /vaults/:id` for a partial rename/re-wrap, `DELETE /vaults/:id` reusing
+the existing crash-safe `deleteVault`). E2EE holds: rename re-encrypts the name
+client-side and ships only ciphertext; change-passphrase runs the existing
+`rewrapVmk` (VMK unchanged, so the cached key and live connection keep working,
+no re-sync) and ships only the new `kdf`/`wrappedVmkB64`; delete ships only a
+`vaultId`; disconnect is purely local. Edit and delete are gated on the vault
+passphrase, verified client-side by `unwrapVmk` (the server authorizes by token;
+the passphrase gate is a local "prove you hold the key" safety check); delete
+additionally requires typing the vault name (or "delete") and a second confirm.
+Disconnect needs no passphrase — it clears `vaultId`/`vmkB64`/`vaultName` and the
+local sync index, leaves the files and the server vault untouched, and is
+reversible by re-unlocking (mirrors the folder-connection disconnect). This
+**realizes** the earlier "vault rename is a client-side operation" intent
+(2026-07-11 vault-names-are-E2EE) and **supersedes** the "delete is admin-CLI
+only" stance (2026-07-11 minimal-admin-surface): deletion is now also exposed to
+the key-holding plugin. Consequences, both accepted: a vault whose passphrase is
+*lost* can no longer be deleted from the plugin (admin `vault-delete` remains the
+escape hatch); and after a rename, other devices show the cached old name until
+they refresh the vault list or re-unlock. Management targets only the connected
+main vault for now — renaming/deleting arbitrary listed vaults is a later
+extension. `admin vault-delete`/`vault-list` are unchanged.

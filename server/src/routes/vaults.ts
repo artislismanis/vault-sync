@@ -1,12 +1,20 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
-import { createVaultRequestSchema, ListVaultsResponse, VaultSummary } from '@vault-sync/shared';
+import {
+  createVaultRequestSchema,
+  updateVaultRequestSchema,
+  ListVaultsResponse,
+  VaultSummary,
+} from '@vault-sync/shared';
 import type { Db } from '../store/db';
 import type { ObjectStore } from '../store/s3';
-import { writeVaultSidecar, indexVault, VaultRecord } from '../store/metadata-log';
-
-// NOTE: auth middleware lands with the session routes; until then these
-// endpoints are only suitable for trusted-network dev use.
+import {
+  writeVaultSidecar,
+  indexVault,
+  updateVault,
+  deleteVault,
+  VaultRecord,
+} from '../store/metadata-log';
 
 interface VaultRow {
   id: string;
@@ -51,5 +59,23 @@ export function registerVaultRoutes(
     await writeVaultSidecar(deps.store, record);
     indexVault(deps.db, record);
     return reply.code(201).send({ id: record.id });
+  });
+
+  app.patch<{ Params: { id: string } }>('/vaults/:id', async (request, reply) => {
+    const parsed = updateVaultRequestSchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
+    const body = parsed.data;
+    const ok = await updateVault(deps.store, deps.db, request.params.id, {
+      encryptedNameB64: body.encryptedNameB64,
+      kdfJson: body.kdf ? JSON.stringify(body.kdf) : undefined,
+      wrappedVmkB64: body.wrappedVmkB64,
+    });
+    if (!ok) return reply.code(404).send({ error: 'vault not found' });
+    return reply.code(204).send();
+  });
+
+  app.delete<{ Params: { id: string } }>('/vaults/:id', async (request, reply) => {
+    await deleteVault(deps.store, deps.db, request.params.id);
+    return reply.code(204).send();
   });
 }

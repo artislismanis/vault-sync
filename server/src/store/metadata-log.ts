@@ -147,6 +147,48 @@ export async function deleteVault(
   return { objects, revisions };
 }
 
+export interface VaultPatch {
+  encryptedNameB64?: string;
+  kdfJson?: string;
+  wrappedVmkB64?: string;
+}
+
+/**
+ * Apply a partial update to a vault (rename and/or passphrase re-wrap). Only
+ * present patch fields change; id/createdAt/kind are preserved. Write-ahead:
+ * sidecar first, index second (same ordering as create). Returns false if the
+ * vault doesn't exist.
+ */
+export async function updateVault(
+  store: ObjectStore,
+  db: Db,
+  vaultId: string,
+  patch: VaultPatch,
+): Promise<boolean> {
+  const row = db.prepare('SELECT * FROM vault WHERE id = ?').get(vaultId) as
+    | {
+        id: string;
+        encrypted_name_b64: string;
+        kdf_json: string;
+        wrapped_vmk_b64: string;
+        created_at: string;
+        kind: VaultKind | null;
+      }
+    | undefined;
+  if (!row) return false;
+  const record: VaultRecord = {
+    id: row.id,
+    encryptedNameB64: patch.encryptedNameB64 ?? row.encrypted_name_b64,
+    kdfJson: patch.kdfJson ?? row.kdf_json,
+    wrappedVmkB64: patch.wrappedVmkB64 ?? row.wrapped_vmk_b64,
+    createdAt: row.created_at,
+    kind: row.kind ?? 'vault',
+  };
+  await writeVaultSidecar(store, record);
+  indexVault(db, record);
+  return true;
+}
+
 /** Rebuild the SQLite index from the bucket's sidecars. Wipes derived tables first. */
 export async function rebuildIndex(
   store: ObjectStore,
