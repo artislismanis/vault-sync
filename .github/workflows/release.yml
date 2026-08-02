@@ -30,8 +30,12 @@ jobs:
       - run: npm test
       - run: npm run lint
 
+  # Gated on server-image, not just test: these two used to run in parallel,
+  # so when the 0.0.14 image build failed the plugin release had already been
+  # published — leaving a plugin that speaks a newer protocol than any
+  # available server image. Publish the release only once the image exists.
   plugin-release:
-    needs: test
+    needs: [test, server-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write # gh release create

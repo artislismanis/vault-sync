@@ -36,7 +36,17 @@ export function registerAuth(app: FastifyInstance, deps: { config: Config; db: D
       .run(new Date().toISOString(), device.id);
   });
 
-  app.post('/login', async (request, reply): Promise<LoginResponse> => {
+  // The only unauthenticated route that does work, and that work is scrypt —
+  // so an unlimited /login is both a password oracle and a cheap way to pin
+  // the server's CPU. The budget is sized for provisioning a handful of
+  // devices in one sitting, not for guessing: against scrypt, 20 attempts per
+  // 15 minutes is ~2000/day, which is nothing next to any real password's
+  // keyspace.
+  const loginRateLimit = {
+    config: { rateLimit: { max: 20, timeWindow: '15 minutes' } },
+  };
+
+  app.post('/login', loginRateLimit, async (request, reply): Promise<LoginResponse> => {
     // Re-resolved per login so `admin set-password` (same volume, via docker
     // exec) takes effect without a restart. Changing the password does NOT
     // invalidate existing device tokens — evict devices with device-revoke.
