@@ -30,6 +30,15 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # better-sqlite3 is the one dependency whose majors depend on an
+      # external step we don't control: the maintainers publishing prebuilt
+      # binaries. 13.0.2 shipped with none, so it cannot install in
+      # node:24-bookworm-slim (no Python/node-gyp) and broke the 0.0.14
+      # release. Upgrade deliberately, once prebuilts exist for the target.
+      - dependency-name: better-sqlite3
+        update-types:
+          - version-update:semver-major
 
   # Grouped including majors: these four actions move in lockstep and CI
   # exercises checkout/setup-node directly, so one PR is easier to judge than

@@ -1,6 +1,6 @@
 {
   "name": "@vault-sync/server",
-  "version": "0.0.14",
+  "version": "0.0.15",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,7 @@
     "@aws-sdk/client-s3": "^3.1085.0",
     "@fastify/websocket": "^11.3.0",
     "@vault-sync/shared": "^0.0.1",
-    "better-sqlite3": "^13.0.2",
+    "better-sqlite3": "^12.11.1",
     "fastify": "^5.10.0",
     "zod": "^4.4.3"
   },
