@@ -42,3 +42,7 @@ npm workspaces monorepo: `server/` (Fastify), `plugin/` (Obsidian, esbuild),
 `shared/` (protocol schemas + crypto). See `CLAUDE.md` for commands and
 [docs/README.md](docs/README.md) for the full documentation map (tutorial,
 how-to guides, reference, architecture/protocol, spec, decision log).
+
+## Licence
+
+[MIT](LICENSE).

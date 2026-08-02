@@ -1,6 +1,7 @@
 {
   "name": "@vault-sync/plugin",
   "version": "0.0.15",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {

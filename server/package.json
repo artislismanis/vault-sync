@@ -1,6 +1,7 @@
 {
   "name": "@vault-sync/server",
   "version": "0.0.15",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +11,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1085.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fastify/websocket": "^11.3.0",
     "@vault-sync/shared": "^0.0.1",
     "better-sqlite3": "^12.11.1",
