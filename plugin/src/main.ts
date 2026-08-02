@@ -16,6 +16,7 @@ import {
   isConfigPath,
 } from './sync/config-categories';
 import { ActivityEntry, ActivityModal, ConfigHistorySuggestModal, HistoryModal } from './ui/modals';
+import { hotApplyConfig, InternalApp } from './sync/hot-apply';
 
 const SYNC_DEBOUNCE_MS = 2_000;
 const PERIODIC_RESCAN_MS = 5 * 60 * 1000;
@@ -244,6 +245,9 @@ export default class VaultSyncPlugin extends Plugin {
           this.logActivity(isMain ? message : `[${opts.label}] ${message}`);
         },
         status: (message) => this.setStatus(message),
+        onConfigPulled: isMain
+          ? () => hotApplyConfig(this.app as unknown as InternalApp, configFs!)
+          : undefined,
       });
       const channel = new ChangeChannel(serverUrl, token, opts.vaultId, (notification) => {
         if (notification.originDeviceId !== this.settings.deviceId) this.scheduleSync(opts.id);

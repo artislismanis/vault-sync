@@ -1,0 +1,78 @@
+# Dependabot version updates. Security updates are a separate, always-on
+# repo setting (Settings → Advanced Security) and ignore the schedule here —
+# they open PRs as soon as an advisory lands.
+#
+# Policy (see docs/decisions.md, 2026-08-02):
+#   - weekly, Monday, so review is one batched chore rather than daily churn
+#   - minor+patch grouped into a single PR per ecosystem
+#   - MAJOR npm bumps deliberately fall through ungrouped, one PR each, so a
+#     breaking change is reviewed and CI-validated in isolation
+version: 2
+
+updates:
+  # One entry covers server/, plugin/, and shared/ — Dependabot reads the
+  # `workspaces` field in the root package.json and resolves the whole tree
+  # against the single root package-lock.json.
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    # Raised from the default 5: a grouped minor/patch PR plus several
+    # individual major PRs would otherwise silently hit the cap.
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: deps
+      prefix-development: deps-dev
+    groups:
+      npm-minor-patch:
+        patterns: ['*']
+        update-types:
+          - minor
+          - patch
+
+  # Grouped including majors: these four actions move in lockstep and CI
+  # exercises checkout/setup-node directly, so one PR is easier to judge than
+  # four. Caveat: docker/login-action and docker/build-push-action appear only
+  # in release.yml, which runs on tag push — a bump of those merges green
+  # without ever executing. Review those two by hand.
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns: ['*']
+
+  # /server  — the node:24-bookworm-slim base image of the published
+  #            ghcr.io server image. Both build and runtime stages share the
+  #            tag on purpose (better-sqlite3 NODE_MODULE_VERSION must match);
+  #            Dependabot bumps both together because they are the same image.
+  # /deploy  — docker-compose.yml. Inert today: the vault-sync image tag is a
+  #            compose interpolation (${VAULT_SYNC_VERSION:-latest}) and the
+  #            bundled-minio profile uses untagged minio images, neither of
+  #            which Dependabot can version. Listed so it starts working the
+  #            moment those tags are pinned.
+  # docker-compose.dev.yml at the repo root is intentionally NOT covered — it
+  # is a throwaway test harness, pinning it is pure maintenance noise.
+  - package-ecosystem: docker
+    directories:
+      - '/server'
+      - '/deploy'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: docker
+    ignore:
+      # Stay on the chosen Node LTS line. Odd-numbered Node majors are
+      # non-LTS (~6 months of support); moving LTS→LTS is a deliberate call,
+      # not a Monday-morning merge.
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major

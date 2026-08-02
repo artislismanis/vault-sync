@@ -83,17 +83,19 @@ interpolation, unlike crypt-style `$` separators.
 
 ## vault-list
 
-List vaults. Names are end-to-end encrypted, so only ids and creation dates
-are visible — cross-reference the id with the plugin's settings screen
-("Copy vault ID" button next to the connected vault's name).
+List vaults. Names are server-visible plaintext (docs/decisions.md
+2026-07-13); a vault created before that migration shows `null` until a
+device that knows the name reconnects and backfills it — cross-reference the
+id with the plugin's settings screen ("Copy vault ID" button) in the
+meantime.
 
 ```
 $ admin vault-list
-┌─────────┬────────────────────────────────────────┬────────────────────────────┐
-│ (index) │ id                                     │ created_at                 │
-├─────────┼────────────────────────────────────────┼────────────────────────────┤
-│ 0       │ '3f2a91bc-7c1d-4e2a-9b0f-2d8f6a1c4e5b' │ '2026-07-11T18:03:11.402Z' │
-└─────────┴────────────────────────────────────────┴────────────────────────────┘
+┌─────────┬────────────────────────────────────────┬─────────────┬────────────────────────────┐
+│ (index) │ id                                     │ name        │ created_at                 │
+├─────────┼────────────────────────────────────────┼─────────────┼────────────────────────────┤
+│ 0       │ '3f2a91bc-7c1d-4e2a-9b0f-2d8f6a1c4e5b' │ 'Work Notes'│ '2026-07-11T18:03:11.402Z' │
+└─────────┴────────────────────────────────────────┴─────────────┴────────────────────────────┘
 ```
 
 ## vault-delete

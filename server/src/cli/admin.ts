@@ -22,7 +22,7 @@ commands:
                                  restart needed). --stdin reads the password
                                  from stdin to keep it out of shell history
   hash-password <password>       print ACCOUNT_PASSWORD_HASH value for .env
-  vault-list                     list vaults (ids + created_at; names are E2EE)
+  vault-list                     list vaults (id, name, created_at)
   vault-delete <vaultId> [--yes] PERMANENTLY delete a vault: all metadata,
                                  blobs, and index rows (preview unless --yes)
   rebuild-index                  rebuild the SQLite index from bucket sidecars
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     case 'vault-list': {
       const config = loadConfig();
       const db = openDb(config.DATA_DIR);
-      const rows = db.prepare('SELECT id, created_at FROM vault ORDER BY created_at').all();
+      const rows = db.prepare('SELECT id, name, created_at FROM vault ORDER BY created_at').all();
       console.table(rows);
       db.close();
       return;

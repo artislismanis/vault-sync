@@ -54,8 +54,13 @@ export const renameDeviceRequestSchema = z.object({
 // plaintext content/names/paths — no E2EE weakening (docs/decisions.md).
 export const vaultKindSchema = z.enum(['vault', 'folder']).default('vault');
 
+// Vault names are server-visible plaintext (docs/decisions.md 2026-07-13,
+// superseding the 2026-07-11 E2EE-names decision) — same category as
+// createdAt/kind: structural account metadata, not file content/paths/keys.
+export const vaultNameSchema = z.string().min(1).max(200);
+
 export const createVaultRequestSchema = z.object({
-  encryptedNameB64: z.string(),
+  name: vaultNameSchema,
   kdf: kdfParamsSchema,
   wrappedVmkB64: z.string(),
   kind: vaultKindSchema,
@@ -63,11 +68,11 @@ export const createVaultRequestSchema = z.object({
 
 export const updateVaultRequestSchema = z
   .object({
-    encryptedNameB64: z.string().optional(), // rename
+    name: vaultNameSchema.optional(), // rename
     kdf: kdfParamsSchema.optional(), // passphrase change …
     wrappedVmkB64: z.string().optional(), // … (both together)
   })
-  .refine((v) => v.encryptedNameB64 !== undefined || (v.kdf && v.wrappedVmkB64), {
+  .refine((v) => v.name !== undefined || (v.kdf && v.wrappedVmkB64), {
     message: 'update must rename or change passphrase',
   })
   .refine((v) => (v.kdf === undefined) === (v.wrappedVmkB64 === undefined), {
@@ -76,7 +81,9 @@ export const updateVaultRequestSchema = z
 
 export const vaultSummarySchema = z.object({
   id: vaultIdSchema,
-  encryptedNameB64: z.string(),
+  // null only for vaults created before the plaintext-name migration and not
+  // yet backfilled by a device that holds the (previously E2EE) name.
+  name: vaultNameSchema.nullable(),
   kdf: kdfParamsSchema,
   wrappedVmkB64: z.string(),
   createdAt: z.iso.datetime(),
@@ -149,6 +156,7 @@ export type DeviceInfo = z.infer<typeof deviceInfoSchema>;
 export type ListDevicesResponse = z.infer<typeof listDevicesResponseSchema>;
 export type RenameDeviceRequest = z.infer<typeof renameDeviceRequestSchema>;
 export type VaultKind = z.infer<typeof vaultKindSchema>;
+export type VaultName = z.infer<typeof vaultNameSchema>;
 export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
 export type UpdateVaultRequest = z.infer<typeof updateVaultRequestSchema>;
 export type VaultSummary = z.infer<typeof vaultSummarySchema>;

@@ -1,6 +1,8 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting } from 'obsidian';
+import { rewrapVmk, unwrapVmk, VaultSummary, WrongPassphraseError } from '@vault-sync/shared';
 import type { Revision } from '@vault-sync/shared';
 import type { SyncEngine } from '../sync/engine';
+import { RestClient } from '../transport/rest';
 import { isMergeableText } from '../sync/index-store';
 import { hasChanges, isDiffable, lineDiff } from '../merge/linediff';
 import { deviceLabel, formatBytes, formatRelativeWhen, formatWhen } from './format';
@@ -301,5 +303,204 @@ export class ActivityModal extends Modal {
 
   onClose(): void {
     this.contentEl.empty();
+  }
+}
+
+export interface EditVaultModalCallbacks {
+  /** Applied to the connected vault after a successful rename. */
+  onRenamed: (newName: string) => void | Promise<void>;
+  /** VMK is unchanged by a passphrase change — nothing local to update. */
+  onPassphraseChanged: () => void | Promise<void>;
+  /** Clears the local connection and any cached sync state for this vault. */
+  onDeleted: () => void | Promise<void>;
+}
+
+/**
+ * Rename / change passphrase / delete for the connected vault — one click
+ * off the "Connected to X" row (docs/decisions.md: follows Obsidian Sync's
+ * layout instead of a standalone "Manage vault" section). Rename and delete
+ * are gated on the vault passphrase where crypto still requires it (delete —
+ * "prove you hold the key"); rename itself no longer needs it now that names
+ * are server-visible plaintext.
+ */
+export class EditVaultModal extends Modal {
+  constructor(
+    app: App,
+    private vaultId: string,
+    private vaultName: string,
+    private serverUrl: string,
+    private token: string | null,
+    /** Live lookup — the settings tab's vault list may refresh while this is open. */
+    private getSummary: () => VaultSummary | undefined,
+    private callbacks: EditVaultModalCallbacks,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private rest(): RestClient {
+    return new RestClient(this.serverUrl, this.token);
+  }
+
+  private requireSummary(): VaultSummary | null {
+    const s = this.getSummary();
+    if (!s) {
+      new Notice('vault-sync: refresh the vault list first, then reopen this dialog');
+      return null;
+    }
+    return s;
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h2', { text: `Edit "${this.vaultName}"` });
+    this.renderRename(contentEl);
+    this.renderChangePassphrase(contentEl);
+    this.renderDelete(contentEl);
+  }
+
+  private renderRename(containerEl: HTMLElement): void {
+    let newName = '';
+    const rename = new Setting(containerEl).setName('Rename vault');
+    rename.addText((text) => text.setPlaceholder('new name').onChange((v) => (newName = v)));
+    rename.addButton((button) =>
+      button.setButtonText('Rename').onClick(async () => {
+        if (!newName) {
+          new Notice('vault-sync: enter a new name');
+          return;
+        }
+        try {
+          await this.rest().updateVault(this.vaultId, { name: newName });
+          this.vaultName = newName;
+          await this.callbacks.onRenamed(newName);
+          new Notice(`vault-sync: renamed to "${newName}"`);
+          this.render();
+        } catch (err) {
+          new Notice(`vault-sync: ${(err as Error).message}`);
+        }
+      }),
+    );
+  }
+
+  private renderChangePassphrase(containerEl: HTMLElement): void {
+    let oldPassphrase = '';
+    let newPassphrase = '';
+    const change = new Setting(containerEl)
+      .setName('Change passphrase')
+      .setDesc('Re-wraps the vault key. Other devices need the new passphrase to unlock.');
+    change.addText((text) => {
+      text.inputEl.type = 'password';
+      text.setPlaceholder('current passphrase').onChange((v) => (oldPassphrase = v));
+    });
+    change.addText((text) => {
+      text.inputEl.type = 'password';
+      text.setPlaceholder('new passphrase').onChange((v) => (newPassphrase = v));
+    });
+    change.addButton((button) =>
+      button.setButtonText('Change').onClick(async () => {
+        const s = this.requireSummary();
+        if (!s) return;
+        if (newPassphrase.length < 8) {
+          new Notice('vault-sync: new passphrase must be 8+ characters');
+          return;
+        }
+        try {
+          const envelope = rewrapVmk(
+            { kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 },
+            oldPassphrase,
+            newPassphrase,
+          );
+          await this.rest().updateVault(this.vaultId, {
+            kdf: envelope.kdf,
+            wrappedVmkB64: envelope.wrappedVmkB64,
+          });
+          // VMK unchanged: the cached key and live connection keep working.
+          new Notice('vault-sync: passphrase changed');
+          await this.callbacks.onPassphraseChanged();
+        } catch (err) {
+          new Notice(
+            err instanceof WrongPassphraseError
+              ? 'vault-sync: wrong current passphrase'
+              : `vault-sync: ${(err as Error).message}`,
+          );
+        }
+      }),
+    );
+  }
+
+  /** Passphrase + typed confirmation, then a two-step inline confirm. Irreversible. */
+  private renderDelete(containerEl: HTMLElement): void {
+    let passphrase = '';
+    let typed = '';
+    const del = new Setting(containerEl)
+      .setName('Delete vault')
+      .setDesc(
+        'Permanently deletes the vault and all its history on the server. Cannot be undone. ' +
+          'Enter the passphrase and type the vault name (or "delete") to confirm.',
+      );
+    del.addText((text) => {
+      text.inputEl.type = 'password';
+      text.setPlaceholder('passphrase').onChange((v) => (passphrase = v));
+    });
+    del.addText((text) =>
+      text.setPlaceholder('vault name or "delete"').onChange((v) => (typed = v)),
+    );
+    del.addButton((button) =>
+      button
+        .setButtonText('Delete')
+        .setWarning()
+        .onClick(() => {
+          const s = this.requireSummary();
+          if (!s) return;
+          const confirmMatches =
+            typed === this.vaultName || typed.trim().toLowerCase() === 'delete';
+          if (!confirmMatches) {
+            new Notice('vault-sync: type the vault name or "delete" to confirm');
+            return;
+          }
+          try {
+            // Verify the passphrase before offering the irreversible step.
+            unwrapVmk({ kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 }, passphrase);
+          } catch (err) {
+            new Notice(
+              err instanceof WrongPassphraseError
+                ? 'vault-sync: wrong passphrase'
+                : `vault-sync: ${(err as Error).message}`,
+            );
+            return;
+          }
+          del.clear();
+          del.setName(`Permanently delete "${this.vaultName}"?`);
+          del.setDesc('This cannot be undone.');
+          del.addButton((confirm) =>
+            confirm
+              .setButtonText('Delete forever')
+              .setWarning()
+              .onClick(async () => {
+                confirm.setDisabled(true);
+                try {
+                  await this.rest().deleteVault(this.vaultId);
+                  new Notice(`vault-sync: deleted "${this.vaultName}"`);
+                  await this.callbacks.onDeleted();
+                  this.close();
+                } catch (err) {
+                  new Notice(`vault-sync: ${(err as Error).message}`);
+                  confirm.setDisabled(false);
+                }
+              }),
+          );
+          del.addButton((cancel) =>
+            cancel.setButtonText('Cancel').onClick(() => this.render()),
+          );
+        }),
+    );
   }
 }

@@ -400,7 +400,7 @@ describe('convergence properties', () => {
       url: '/vaults',
       headers: { authorization: `Bearer ${login.json().token}` },
       payload: {
-        encryptedNameB64: 'eA==',
+        name: 'x',
         kdf: {
           algorithm: 'argon2id',
           opsLimit: 3,
@@ -483,7 +483,7 @@ describe('convergence properties', () => {
         url: '/vaults',
         headers: { authorization: `Bearer ${login.json().token}` },
         payload: {
-          encryptedNameB64: 'eA==',
+          name: 'x',
           kdf: {
             algorithm: 'argon2id',
             opsLimit: 3,

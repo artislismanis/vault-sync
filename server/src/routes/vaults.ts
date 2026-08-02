@@ -18,11 +18,11 @@ import {
 
 interface VaultRow {
   id: string;
-  encrypted_name_b64: string;
   kdf_json: string;
   wrapped_vmk_b64: string;
   created_at: string;
   kind: VaultSummary['kind'];
+  name: string | null;
 }
 
 export function registerVaultRoutes(
@@ -35,7 +35,7 @@ export function registerVaultRoutes(
       vaults: rows.map(
         (row): VaultSummary => ({
           id: row.id as VaultSummary['id'],
-          encryptedNameB64: row.encrypted_name_b64,
+          name: row.name,
           kdf: JSON.parse(row.kdf_json),
           wrappedVmkB64: row.wrapped_vmk_b64,
           createdAt: row.created_at,
@@ -49,7 +49,8 @@ export function registerVaultRoutes(
     const body = createVaultRequestSchema.parse(request.body);
     const record: VaultRecord = {
       id: randomUUID(),
-      encryptedNameB64: body.encryptedNameB64,
+      encryptedNameB64: '', // legacy field, no longer written (docs/decisions.md 2026-07-13)
+      name: body.name,
       kdfJson: JSON.stringify(body.kdf),
       wrappedVmkB64: body.wrappedVmkB64,
       createdAt: new Date().toISOString(),
@@ -66,7 +67,7 @@ export function registerVaultRoutes(
     if (!parsed.success) return reply.code(400).send({ error: parsed.error.message });
     const body = parsed.data;
     const ok = await updateVault(deps.store, deps.db, request.params.id, {
-      encryptedNameB64: body.encryptedNameB64,
+      name: body.name,
       kdfJson: body.kdf ? JSON.stringify(body.kdf) : undefined,
       wrappedVmkB64: body.wrappedVmkB64,
     });

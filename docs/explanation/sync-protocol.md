@@ -10,9 +10,12 @@ changes.
   notifies, but must never be able to read content, file names, or paths.
 - Clients hold the vault passphrase. A future web client is just another
   client that is given the key by the user.
-- Server-visible metadata is limited to: account identity, vault IDs, opaque
-  item IDs, ciphertext sizes, version graph, timestamps. Accept that sizes and
-  edit timing leak; do not leak more.
+- Server-visible metadata is limited to: account identity, vault IDs, **vault
+  names** (plaintext since 2026-07-13 — a deliberate, owner-chosen exception;
+  see docs/decisions.md), opaque item IDs, ciphertext sizes, version graph,
+  timestamps. Accept that sizes and edit timing leak; do not leak more. File
+  content, file names, and paths remain end-to-end encrypted without
+  exception.
 
 ## Encryption
 
@@ -40,9 +43,9 @@ changes.
 
 ## Data model (server-side, all content opaque)
 
-- `vault`: id, encrypted name (encrypted under the VMK — the server and admin
-  CLI see only vault id / created_at / usage), KDF params/salt, wrapped VMK,
-  retention policy, created_at.
+- `vault`: id, **plaintext name** (server-visible since 2026-07-13; `null` on
+  a not-yet-migrated vault until a key-holding device backfills it), KDF
+  params/salt, wrapped VMK, retention policy, created_at.
 - `item`: id, vault_id, path_hmac, encrypted_path, deleted flag.
 - `revision`: id, item_id, parent_revision_id(s), ciphertext blob ref, size,
   client_device_id, client_mtime, server_receive_time.

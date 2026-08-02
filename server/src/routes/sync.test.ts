@@ -83,7 +83,7 @@ describe('sync routes', () => {
       method: 'POST',
       url: '/vaults',
       headers: auth(),
-      payload: { encryptedNameB64: 'b3BhcXVl', kdf: KDF, wrappedVmkB64: 'b3BhcXVl' },
+      payload: { name: 'test vault', kdf: KDF, wrappedVmkB64: 'b3BhcXVl' },
     });
     expect(created.statusCode).toBe(201);
     vaultId = created.json().id;

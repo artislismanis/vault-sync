@@ -64,7 +64,7 @@ describe('vault kind', () => {
 
   it('defaults kind to vault when a create request omits it', () => {
     const parsed = createVaultRequestSchema.parse({
-      encryptedNameB64: 'b3BhcXVl',
+      name: 'x',
       kdf: { algorithm: 'argon2id', opsLimit: 1, memLimitBytes: 1, saltB64: 'x' },
       wrappedVmkB64: 'b3BhcXVl',
     });

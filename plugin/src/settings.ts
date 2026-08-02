@@ -1,12 +1,8 @@
 import { App, Notice, Platform, PluginSettingTab, Setting } from 'obsidian';
 import {
   createEnvelope,
-  decryptVaultName,
-  deriveVaultKeys,
-  encryptVaultName,
   generateVmk,
   getSodium,
-  rewrapVmk,
   unwrapVmk,
   VaultKind,
   VaultSummary,
@@ -22,6 +18,7 @@ import {
 } from './sync/categories';
 import { ConfigSyncToggles, DEFAULT_CONFIG_SYNC_TOGGLES } from './sync/config-categories';
 import { normalizeMountPath, validateMountPath } from './sync/mount-paths';
+import { EditVaultModal } from './ui/modals';
 
 /**
  * A folder connection mounts another server vault ("shared vault") at a local
@@ -49,11 +46,9 @@ export interface VaultSyncSettings {
   // persisted. The device already holds the vault in plaintext, so local VMK
   // storage is not a weakening (docs/decisions.md).
   vmkB64: string | null;
-  // Decrypted name of the connected vault, and names learned at unlock/create,
-  // cached for display. Not a weakening: the device already holds the vault in
-  // plaintext (docs/decisions.md); names never travel to the server unencrypted.
+  // Cached display name of the connected vault (server-visible plaintext,
+  // docs/decisions.md 2026-07-13) — avoids a list round-trip just to show it.
   vaultName: string | null;
-  knownVaultNames: Record<string, string>;
   // Selective-sync size cap; 0 = unlimited. Files above it stop syncing on
   // this device (never deleted anywhere). The mobile default is the OOM
   // guard: Obsidian's file API is whole-file, so a file must fit in webview
@@ -82,7 +77,6 @@ export const DEFAULT_SETTINGS: VaultSyncSettings = {
   vaultId: null,
   vmkB64: null,
   vaultName: null,
-  knownVaultNames: {},
   maxFileSizeMB: Platform.isMobile ? 100 : 0,
   parallelTransfers: Platform.isMobile ? 2 : 4,
   syncCategories: { ...DEFAULT_CATEGORY_TOGGLES },
@@ -140,6 +134,19 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     } catch {
       this.display();
     }
+  }
+
+  /**
+   * Fires the initial sync without making the caller (and the settings UI)
+   * wait for it — a fresh device's first sync can take a while on a large
+   * vault, and the "connected" state is already true the moment settings are
+   * saved. syncNow() catches and surfaces its own per-connection errors; this
+   * catch only guards the connection-setup step in startSync() itself.
+   */
+  private startSyncInBackground(): void {
+    void this.plugin.startSync().catch((err) => {
+      new Notice(`vault-sync: ${(err as Error).message}`);
+    });
   }
 
   private renderTabBar(containerEl: HTMLElement): void {
@@ -393,7 +400,34 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private async loadVaults(): Promise<void> {
     const { serverUrl, token } = this.plugin.settings;
     this.vaults = (await new RestClient(serverUrl, token).listVaults()).vaults;
+    await this.backfillMissingNames();
     this.display();
+  }
+
+  /**
+   * One-time migration (docs/decisions.md 2026-07-13): vaults created before
+   * names became server-visible plaintext have `name: null` until some device
+   * that already knows the name (from its local cache) writes it back. Only
+   * this device's own connected vault/folder connections can supply one —
+   * a vault nobody here has ever opened stays null until another device does.
+   */
+  private async backfillMissingNames(): Promise<void> {
+    const settings = this.plugin.settings;
+    const known = new Map<string, string>();
+    if (settings.vaultId && settings.vaultName) known.set(settings.vaultId, settings.vaultName);
+    for (const fc of settings.folderConnections) known.set(fc.vaultId, fc.vaultName);
+
+    const rest = new RestClient(settings.serverUrl, settings.token);
+    for (const vault of this.vaults) {
+      const name = known.get(vault.id);
+      if (!name || vault.name !== null) continue;
+      try {
+        await rest.updateVault(vault.id, { name });
+        vault.name = name;
+      } catch {
+        // Best-effort — next settings open (or another device) retries.
+      }
+    }
   }
 
   /** Unwrap a vault's VMK from its passphrase; shared by the main vault and folder connections. */
@@ -403,7 +437,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   ): { vaultId: string; vmkB64: string; vaultName: string } {
     const vmk = unwrapVmk({ kdf: summary.kdf, wrappedVmkB64: summary.wrappedVmkB64 }, passphrase);
     const sodium = getSodium();
-    const vaultName = decryptVaultName(deriveVaultKeys(vmk), summary.encryptedNameB64);
+    // Name is server-visible plaintext (docs/decisions.md 2026-07-13) — no
+    // decryption needed, just the fallback for a not-yet-backfilled vault.
+    const vaultName = summary.name ?? `vault ${summary.id.slice(0, 8)}…`;
     return {
       vaultId: summary.id,
       vmkB64: sodium.to_base64(vmk, sodium.base64_variants.ORIGINAL),
@@ -420,10 +456,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const settings = this.plugin.settings;
     const vmk = generateVmk();
     const envelope = createEnvelope(vmk, passphrase);
-    const keys = deriveVaultKeys(vmk);
     const rest = new RestClient(settings.serverUrl, settings.token);
     const { id } = await rest.createVault({
-      encryptedNameB64: encryptVaultName(keys, name),
+      name,
       kdf: envelope.kdf,
       wrappedVmkB64: envelope.wrappedVmkB64,
       kind,
@@ -447,15 +482,49 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         : 'No vault connected',
     );
     if (settings.vaultId) {
+      const vaultId = settings.vaultId;
       connected.addExtraButton((button) =>
         button
           .setIcon('copy')
           .setTooltip('Copy vault ID')
           .onClick(async () => {
-            await navigator.clipboard.writeText(settings.vaultId!);
+            await navigator.clipboard.writeText(vaultId);
             new Notice('vault-sync: vault ID copied');
           }),
       );
+      connected.addButton((button) =>
+        button
+          .setButtonText('Edit')
+          .setTooltip('Rename, change passphrase, or delete this vault')
+          .onClick(() => {
+            new EditVaultModal(
+              this.app,
+              vaultId,
+              settings.vaultName ?? `vault ${vaultId.slice(0, 8)}…`,
+              settings.serverUrl,
+              settings.token,
+              () => this.vaults.find((v) => v.id === vaultId),
+              {
+                onRenamed: async (newName) => {
+                  settings.vaultName = newName;
+                  await this.plugin.saveSettings();
+                  await this.refreshVaultsAndRender();
+                },
+                onPassphraseChanged: () => this.refreshVaultsAndRender(),
+                onDeleted: async () => {
+                  settings.vaultId = null;
+                  settings.vmkB64 = null;
+                  settings.vaultName = null;
+                  await this.plugin.saveSettings();
+                  await this.forgetConnectionState(vaultId);
+                  await this.refreshVaultsAndRender();
+                  this.startSyncInBackground();
+                },
+              },
+            ).open();
+          }),
+      );
+      this.renderDisconnectVault(connected, vaultId);
     }
     connected.addButton((button) =>
       button
@@ -475,18 +544,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const fullVaults = this.vaults.filter((v) => v.kind !== 'folder');
     if (fullVaults.length > 0) {
       let passphrase = '';
-      const setting = new Setting(containerEl)
-        .setName('Connect to existing vault')
-        .setDesc(
-          'Names are end-to-end encrypted and decrypt after you unlock; ' +
-            'vaults unlocked before on this device show their name.',
-        );
+      const setting = new Setting(containerEl).setName('Connect to existing vault');
       setting.addDropdown((dropdown) => {
         for (const vault of fullVaults) {
           dropdown.addOption(
             vault.id,
-            settings.knownVaultNames[vault.id] ??
-              `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
+            vault.name ?? `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
           );
         }
         this.selectedVaultId = fullVaults[0]?.id ?? null;
@@ -508,11 +571,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               settings.vaultId = vaultId;
               settings.vmkB64 = vmkB64;
               settings.vaultName = vaultName;
-              settings.knownVaultNames[vaultId] = vaultName;
               await this.plugin.saveSettings();
               new Notice(`vault-sync: unlocked "${vaultName}" — starting sync`);
-              await this.plugin.startSync();
               this.display();
+              this.startSyncInBackground();
             } catch (err) {
               new Notice(
                 err instanceof WrongPassphraseError
@@ -549,11 +611,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           settings.vaultId = vaultId;
           settings.vmkB64 = vmkB64;
           settings.vaultName = vaultName;
-          settings.knownVaultNames[vaultId] = vaultName;
           await this.plugin.saveSettings();
           new Notice(`vault-sync: created "${vaultName}" — starting sync`);
-          await this.plugin.startSync();
           this.display();
+          this.startSyncInBackground();
         } catch (err) {
           new Notice(`vault-sync: ${(err as Error).message}`);
         }
@@ -570,149 +631,25 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             .setCta()
             .onClick(() => this.plugin.syncNow()),
         );
-      this.renderManageVault(containerEl);
     }
 
     this.renderFolderConnections(containerEl);
   }
 
   /**
-   * Lifecycle controls for the connected main vault: rename, change passphrase,
-   * disconnect (local only), delete (server-side). Edit/delete are gated on the
-   * vault passphrase (verified client-side via unwrapVmk); the server only ever
-   * sees the re-encrypted name / re-wrapped VMK / a delete by id.
+   * Two-step inline confirm directly on the "Connected to X" row — disconnect
+   * lives where the vault shows as connected, not in a separate section
+   * (docs/decisions.md; matches Obsidian Sync's layout). Local only: clears
+   * this device's connection, leaves the files and the server vault untouched.
    */
-  private renderManageVault(containerEl: HTMLElement): void {
+  private renderDisconnectVault(setting: Setting, vaultId: string): void {
     const settings = this.plugin.settings;
-    const vaultId = settings.vaultId;
-    if (!vaultId) return;
-
-    new Setting(containerEl)
-      .setName('Manage vault')
-      .setDesc(
-        'Rename, change passphrase, or delete this vault. Edit and delete need ' +
-          'the current passphrase. Refresh the vault list if these do nothing.',
-      )
-      .setHeading();
-
-    // The current server envelope (kdf, wrapped VMK, encrypted name) — needed to
-    // verify the passphrase and to re-encrypt. Absent until the list is loaded.
-    const summary = (): VaultSummary | undefined =>
-      this.vaults.find((v) => v.id === vaultId);
-    const requireSummary = (): VaultSummary | null => {
-      const s = summary();
-      if (!s) {
-        new Notice('vault-sync: refresh the vault list first');
-        return null;
-      }
-      return s;
-    };
-
-    // --- Rename ---------------------------------------------------------------
-    {
-      let newName = '';
-      let passphrase = '';
-      const rename = new Setting(containerEl).setName('Rename vault');
-      rename.addText((text) => text.setPlaceholder('new name').onChange((v) => (newName = v)));
-      rename.addText((text) => {
-        text.inputEl.type = 'password';
-        text.setPlaceholder('passphrase').onChange((v) => (passphrase = v));
-      });
-      rename.addButton((button) =>
-        button.setButtonText('Rename').onClick(async () => {
-          const s = requireSummary();
-          if (!s) return;
-          if (!newName) {
-            new Notice('vault-sync: enter a new name');
-            return;
-          }
-          try {
-            const vmk = unwrapVmk({ kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 }, passphrase);
-            const encryptedNameB64 = encryptVaultName(deriveVaultKeys(vmk), newName);
-            await new RestClient(settings.serverUrl, settings.token).updateVault(vaultId, {
-              encryptedNameB64,
-            });
-            settings.vaultName = newName;
-            settings.knownVaultNames[vaultId] = newName;
-            await this.plugin.saveSettings();
-            new Notice(`vault-sync: renamed to "${newName}"`);
-            await this.refreshVaultsAndRender();
-          } catch (err) {
-            new Notice(
-              err instanceof WrongPassphraseError
-                ? 'vault-sync: wrong passphrase'
-                : `vault-sync: ${(err as Error).message}`,
-            );
-          }
-        }),
-      );
-    }
-
-    // --- Change passphrase ----------------------------------------------------
-    {
-      let oldPassphrase = '';
-      let newPassphrase = '';
-      const change = new Setting(containerEl)
-        .setName('Change passphrase')
-        .setDesc('Re-wraps the vault key. Other devices need the new passphrase to unlock.');
-      change.addText((text) => {
-        text.inputEl.type = 'password';
-        text.setPlaceholder('current passphrase').onChange((v) => (oldPassphrase = v));
-      });
-      change.addText((text) => {
-        text.inputEl.type = 'password';
-        text.setPlaceholder('new passphrase').onChange((v) => (newPassphrase = v));
-      });
-      change.addButton((button) =>
-        button.setButtonText('Change').onClick(async () => {
-          const s = requireSummary();
-          if (!s) return;
-          if (newPassphrase.length < 8) {
-            new Notice('vault-sync: new passphrase must be 8+ characters');
-            return;
-          }
-          try {
-            const envelope = rewrapVmk(
-              { kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 },
-              oldPassphrase,
-              newPassphrase,
-            );
-            await new RestClient(settings.serverUrl, settings.token).updateVault(vaultId, {
-              kdf: envelope.kdf,
-              wrappedVmkB64: envelope.wrappedVmkB64,
-            });
-            // VMK unchanged: cached vmkB64 and the live connection keep working.
-            new Notice('vault-sync: passphrase changed');
-            await this.refreshVaultsAndRender();
-          } catch (err) {
-            new Notice(
-              err instanceof WrongPassphraseError
-                ? 'vault-sync: wrong current passphrase'
-                : `vault-sync: ${(err as Error).message}`,
-            );
-          }
-        }),
-      );
-    }
-
-    // --- Disconnect (local only, no passphrase) -------------------------------
-    this.renderDisconnectVault(containerEl, vaultId);
-
-    // --- Delete (server-side, passphrase + typed confirm) ---------------------
-    this.renderDeleteVault(containerEl, vaultId, requireSummary);
-  }
-
-  /** Two-step inline confirm; clears local connection state, leaves files and the server vault. */
-  private renderDisconnectVault(containerEl: HTMLElement, vaultId: string): void {
-    const settings = this.plugin.settings;
-    const disconnect = new Setting(containerEl)
-      .setName('Disconnect vault')
-      .setDesc('Stops syncing on this device. Files stay in the vault; the server vault is untouched.');
-    disconnect.addButton((button) =>
+    setting.addButton((button) =>
       button.setButtonText('Disconnect').onClick(() => {
-        disconnect.clear();
-        disconnect.setName('Disconnect this vault?');
-        disconnect.addButton((confirm) =>
+        setting.clear();
+        setting.setName('Disconnect this vault?');
+        setting.setDesc('Files stay in the vault; the server vault is untouched.');
+        setting.addButton((confirm) =>
           confirm
             .setButtonText('Disconnect')
             .setWarning()
@@ -724,99 +661,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
               await this.forgetConnectionState(vaultId);
               new Notice('vault-sync: disconnected — files stay put, the server vault is untouched');
-              await this.plugin.startSync();
               await this.refreshVaultsAndRender();
+              this.startSyncInBackground();
             }),
         );
-        disconnect.addButton((cancel) =>
-          cancel.setButtonText('Cancel').onClick(() => {
-            disconnect.settingEl.remove();
-            this.renderDisconnectVault(containerEl, vaultId);
-          }),
-        );
+        setting.addButton((cancel) => cancel.setButtonText('Cancel').onClick(() => this.display()));
       }),
-    );
-  }
-
-  /** Passphrase + typed confirmation, then a two-step inline confirm. Irreversible. */
-  private renderDeleteVault(
-    containerEl: HTMLElement,
-    vaultId: string,
-    requireSummary: () => VaultSummary | null,
-  ): void {
-    const settings = this.plugin.settings;
-    let passphrase = '';
-    let typed = '';
-    const del = new Setting(containerEl)
-      .setName('Delete vault')
-      .setDesc(
-        'Permanently deletes the vault and all its history on the server. Cannot be undone. ' +
-          'Enter the passphrase and type the vault name (or "delete") to confirm.',
-      );
-    del.addText((text) => {
-      text.inputEl.type = 'password';
-      text.setPlaceholder('passphrase').onChange((v) => (passphrase = v));
-    });
-    del.addText((text) =>
-      text.setPlaceholder('vault name or "delete"').onChange((v) => (typed = v)),
-    );
-    del.addButton((button) =>
-      button
-        .setButtonText('Delete')
-        .setWarning()
-        .onClick(() => {
-          const s = requireSummary();
-          if (!s) return;
-          const confirmMatches =
-            typed === settings.vaultName || typed.trim().toLowerCase() === 'delete';
-          if (!confirmMatches) {
-            new Notice('vault-sync: type the vault name or "delete" to confirm');
-            return;
-          }
-          try {
-            // Verify the passphrase before offering the irreversible step.
-            unwrapVmk({ kdf: s.kdf, wrappedVmkB64: s.wrappedVmkB64 }, passphrase);
-          } catch (err) {
-            new Notice(
-              err instanceof WrongPassphraseError
-                ? 'vault-sync: wrong passphrase'
-                : `vault-sync: ${(err as Error).message}`,
-            );
-            return;
-          }
-          const name = settings.vaultName ?? `vault ${vaultId.slice(0, 8)}…`;
-          del.clear();
-          del.setName(`Permanently delete "${name}"?`);
-          del.setDesc('This cannot be undone.');
-          del.addButton((confirm) =>
-            confirm
-              .setButtonText('Delete forever')
-              .setWarning()
-              .onClick(async () => {
-                confirm.setDisabled(true);
-                try {
-                  await new RestClient(settings.serverUrl, settings.token).deleteVault(vaultId);
-                  settings.vaultId = null;
-                  settings.vmkB64 = null;
-                  settings.vaultName = null;
-                  await this.plugin.saveSettings();
-                  await this.forgetConnectionState(vaultId);
-                  new Notice(`vault-sync: deleted "${name}"`);
-                  await this.plugin.startSync();
-                  await this.refreshVaultsAndRender();
-                } catch (err) {
-                  new Notice(`vault-sync: ${(err as Error).message}`);
-                  confirm.setDisabled(false);
-                }
-              }),
-          );
-          del.addButton((cancel) =>
-            cancel.setButtonText('Cancel').onClick(() => {
-              del.settingEl.remove();
-              this.renderDeleteVault(containerEl, vaultId, requireSummary);
-            }),
-          );
-        }),
     );
   }
 
@@ -880,8 +730,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           for (const vault of connectableVaults) {
             dropdown.addOption(
               vault.id,
-              settings.knownVaultNames[vault.id] ??
-                `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
+              vault.name ?? `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
             );
           }
           this.selectedFolderVaultId = connectableVaults[0]?.id ?? null;
@@ -989,13 +838,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       vaultName: unlocked.vaultName,
       localPath,
     });
-    settings.knownVaultNames[unlocked.vaultId] = unlocked.vaultName;
     await this.plugin.saveSettings();
     new Notice(
       `vault-sync: connected "${unlocked.vaultName}" at ${localPath}/ — existing files will merge with the shared vault`,
     );
-    await this.plugin.startSync();
     await this.refreshVaultsAndRender();
+    this.startSyncInBackground();
   }
 
   /** Best-effort cleanup of a disconnected connection's local sync state. */
