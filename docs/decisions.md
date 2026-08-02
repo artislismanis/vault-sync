@@ -697,3 +697,27 @@ the top and widen only per job (`plugin-release`: `contents: write`;
 scripts. **Rules out**: CodeQL "default setup" via the UI (it conflicts with a
 committed workflow file, and the file is reviewable and SHA-pinned like
 everything else); workflow-wide write permissions as a convenience.
+
+**2026-08-02 — better-sqlite3 pinned below 13 until prebuilts exist; CI now
+builds the server image.** The 0.0.14 release failed at `server-image`:
+better-sqlite3 13.0.2 publishes *no* prebuilt binaries (zero release assets,
+against a full matrix for 12.11.1), so `npm ci` fell back to `node-gyp
+rebuild`, which needs Python — absent from `node:24-bookworm-slim`. This is
+precisely the assumption the Dockerfile comment records ("Debian, not Alpine,
+so npm uses prebuilt binaries instead of compiling from source"); a major bump
+silently invalidated it. The failure was safe — the build dies before the push
+step, so `ghcr.io/...:latest` never moved — but it landed *after*
+`plugin-release` succeeded, publishing a plugin with no matching server image.
+Reverted to `^12.11.1` and added a Dependabot `ignore` for better-sqlite3
+majors: it is the only dependency whose upgradability hinges on a third party
+publishing binaries, so it should be a deliberate upgrade, not a Monday merge.
+The deeper fix is the `docker-build` job now in `ci.yml` (`push: false`): CI
+ran on a GitHub runner with a full build toolchain, so it could never see a
+difference that only exists inside the slim runtime image — which is why #9
+merged green and broke a release. **Rules out**: adding `python3` +
+`build-essential` to the build stage (fixes the symptom by making every image
+build compile native code from source — slower builds, larger attack surface,
+and it silently accepts dependencies that ship no binaries); reusing the
+published 0.0.14 version number. **Consequence accepted**: ~1-2 min added to
+every PR, and the 0.0.14 GitHub release stands as a plugin-only dud, with
+0.0.15 the first complete release of this work.
