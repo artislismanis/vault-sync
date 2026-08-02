@@ -8,7 +8,7 @@ acknowledged, so "back up the bucket" backs up everything: vaults, files,
 full version history. It contains only ciphertext — a leaked backup reveals
 sizes and timing, not content.
 
-The `vault-sync-data` volume (`DATA_DIR`) is *almost* expendable:
+The `vault-sync-data` volume (`DATA_DIR`) is _almost_ expendable:
 
 - `index.db` — a derived SQLite cache, rebuildable from the bucket.
 - `account.json` — only exists if you've used `admin set-password`; losing it

@@ -32,16 +32,14 @@ export function registerVaultRoutes(
   app.get('/vaults', async (): Promise<ListVaultsResponse> => {
     const rows = deps.db.prepare('SELECT * FROM vault ORDER BY created_at').all() as VaultRow[];
     return {
-      vaults: rows.map(
-        (row): VaultSummary => ({
-          id: row.id as VaultSummary['id'],
-          name: row.name,
-          kdf: JSON.parse(row.kdf_json),
-          wrappedVmkB64: row.wrapped_vmk_b64,
-          createdAt: row.created_at,
-          kind: row.kind ?? 'vault',
-        }),
-      ),
+      vaults: rows.map((row): VaultSummary => ({
+        id: row.id as VaultSummary['id'],
+        name: row.name,
+        kdf: JSON.parse(row.kdf_json),
+        wrappedVmkB64: row.wrapped_vmk_b64,
+        createdAt: row.created_at,
+        kind: row.kind ?? 'vault',
+      })),
     };
   });
 

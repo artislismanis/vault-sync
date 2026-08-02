@@ -120,8 +120,14 @@ describe('vault routes: update & delete', () => {
   it('PATCH rejects an empty / half-specified body', async () => {
     const id = await createVault();
     expect(
-      (await app.inject({ method: 'PATCH', url: `/vaults/${id}`, headers: auth(token), payload: {} }))
-        .statusCode,
+      (
+        await app.inject({
+          method: 'PATCH',
+          url: `/vaults/${id}`,
+          headers: auth(token),
+          payload: {},
+        })
+      ).statusCode,
     ).toBe(400);
     // kdf without wrappedVmkB64 (and no rename) fails the paired-fields refine.
     expect(

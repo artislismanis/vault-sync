@@ -13,7 +13,7 @@ parity baseline), then iterate.
 - Two desktops and one phone converge on the same vault state without manual
   intervention; desktop↔desktop propagation feels near-instant, mobile syncs
   fully on app foreground.
-- Edits made *outside* Obsidian on desktop (Claude Code, files dropped into the
+- Edits made _outside_ Obsidian on desktop (Claude Code, files dropped into the
   vault folder) sync like any other edit.
 - Concurrent offline edits to the same note merge automatically when changes
   don't overlap; true collisions produce a conflict file, never data loss.
@@ -34,20 +34,20 @@ parity baseline), then iterate.
 
 ## Phase 1 — MVP
 
-| Area | Requirement |
-|---|---|
-| Sync engine | Whole-file sync of markdown + attachments; per-file versioning; delete propagation |
-| Change detection | Obsidian vault events + startup reconciliation scan + periodic/watched rescan on desktop (external edits are first-class) |
-| Transport | HTTPS REST for blobs/state + WebSocket push for change notifications, degrading gracefully to polling |
-| Mobile behaviour | Full sync on app foreground; no reliance on background execution |
-| E2EE | Client-side encryption of content AND paths; per-vault passphrase; server never sees plaintext or keys (see sync-protocol.md) |
-| Conflict resolution | Client-side three-way merge for non-overlapping markdown edits; conflict file fallback; losing versions always preserved in history |
-| Version history | Keep every revision by default; retention/pruning policy configurable per vault; restore any version from plugin UI with preview + diff and per-device attribution |
-| Selective sync | Native formats (md, canvas, base) always sync; toggles for images/audio/video/PDF (Obsidian's accepted-extension lists) and all other types; max-file-size cap |
-| Onboarding | Plugin settings: server URL + account password → pick existing vault or create one → enter/set E2EE passphrase → map to local folder |
-| Vault status | Sync activity log + status indicator in plugin (parity: Obsidian's status icon/log) |
-| Admin | Minimal CLI (create vault, reset password, storage usage). No web admin UI |
-| Ops | Single Docker image + compose file (server + MinIO for dev); all persistent state in S3 buckets — backing up buckets backs up everything |
+| Area                | Requirement                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Sync engine         | Whole-file sync of markdown + attachments; per-file versioning; delete propagation                                                                                 |
+| Change detection    | Obsidian vault events + startup reconciliation scan + periodic/watched rescan on desktop (external edits are first-class)                                          |
+| Transport           | HTTPS REST for blobs/state + WebSocket push for change notifications, degrading gracefully to polling                                                              |
+| Mobile behaviour    | Full sync on app foreground; no reliance on background execution                                                                                                   |
+| E2EE                | Client-side encryption of content AND paths; per-vault passphrase; server never sees plaintext or keys (see sync-protocol.md)                                      |
+| Conflict resolution | Client-side three-way merge for non-overlapping markdown edits; conflict file fallback; losing versions always preserved in history                                |
+| Version history     | Keep every revision by default; retention/pruning policy configurable per vault; restore any version from plugin UI with preview + diff and per-device attribution |
+| Selective sync      | Native formats (md, canvas, base) always sync; toggles for images/audio/video/PDF (Obsidian's accepted-extension lists) and all other types; max-file-size cap     |
+| Onboarding          | Plugin settings: server URL + account password → pick existing vault or create one → enter/set E2EE passphrase → map to local folder                               |
+| Vault status        | Sync activity log + status indicator in plugin (parity: Obsidian's status icon/log)                                                                                |
+| Admin               | Minimal CLI (create vault, reset password, storage usage). No web admin UI                                                                                         |
+| Ops                 | Single Docker image + compose file (server + MinIO for dev); all persistent state in S3 buckets — backing up buckets backs up everything                           |
 
 ## Phase 2 — fast-follow (captured, not MVP-blocking)
 
@@ -75,7 +75,7 @@ parity baseline), then iterate.
 
 - Multi-user / shared vaults, collaboration (distinct from folder
   connections above, which is one user mounting their own additional vaults —
-  this item is about multiple *people* sharing access)
+  this item is about multiple _people_ sharing access)
 - Headless CLI sync client
 - Server-assisted housekeeping that works on ciphertext (orphan GC, quota)
 

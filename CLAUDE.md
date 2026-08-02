@@ -30,8 +30,10 @@ docs/      Specs and decisions (see above)
 - Install: `npm install` (npm workspaces: server, plugin, shared)
 - Build all: `npm run build` (type-checks all packages, then bundles server + plugin)
 - Test all: `npm test` (vitest, all workspaces)
-- Lint: `npm run lint` — includes a mechanical ban on Node/Electron imports in `plugin/` and `shared/`
-- Format: `npm run format`
+- Lint: `npm run lint` — eslint (includes a mechanical ban on Node/Electron
+  imports in `plugin/` and `shared/`) plus `prettier --check`
+- Format: `npm run format` — `docs/decisions.md` is in `.prettierignore`
+  because prettier mangles its `${VAR}` spans and `**bold**` headings
 - Server dev: `npm run dev -w server` — reads S3 endpoint/credentials from `../.env`
   (copy `.env.example`; point at any S3-compatible store). `docker-compose.dev.yml`
   is an OPTIONAL throwaway MinIO for integration testing only.

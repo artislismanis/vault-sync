@@ -721,3 +721,42 @@ and it silently accepts dependencies that ship no binaries); reusing the
 published 0.0.14 version number. **Consequence accepted**: ~1-2 min added to
 every PR, and the 0.0.14 GitHub release stands as a plugin-only dud, with
 0.0.15 the first complete release of this work.
+
+**2026-08-02 — `/login` rate limited; MIT licence; formatter no longer allowed
+near the decision log.** Three tidy-ups found by looking at what the repo was
+actually missing. (1) CodeQL's five `js/missing-rate-limiting` alerts were all
+real in one place that matters: `POST /login` is the only unauthenticated route
+that does work, and that work is scrypt, making it simultaneously a password
+oracle and a cheap way to pin the server's CPU. `@fastify/rate-limit` now
+registers a loose global default (600/min, `/healthz` exempt — sync is chatty,
+so the global limit bounds a runaway client rather than shaping traffic) and a
+strict per-route budget on `/login` of 20 per 15 minutes. Sized for provisioning
+several devices in one sitting; against scrypt, ~2000 attempts/day is nothing
+next to any real password's keyspace. Deliberately **not** setting
+`trustProxy`: keying on `request.ip` behind a reverse proxy means all clients
+share one bucket, which is acceptable for a single-user server, whereas
+trusting `X-Forwarded-For` is only safe if the server cannot also be reached
+directly — that is a deployment fact the code cannot assume. The property test
+surfaced that an initial budget of 10 was too tight for legitimate multi-device
+provisioning; the limit was raised rather than the test weakened. (2) The repo
+had **no licence at all** — no file, no `package.json` field, nothing in the
+README — which under default copyright makes self-hosting, forking, and BRAT
+redistribution legally impossible, contradicting the entire point of the
+project. Now MIT, matching Obsidian plugin ecosystem norms. (3) `npm run
+format` (`prettier --write .`) silently corrupted `docs/decisions.md`, stripping
+the space after `${VAR}` inline-code spans and rewriting `**bold**` entry
+headings as `_*...*_`; the documented command was a trap. `.prettierignore` now
+excludes it, the 22 drifted source files are formatted, and `npm run lint` runs
+`prettier --check` so drift cannot recur silently. **Rules out**: per-IP login
+limiting via `X-Forwarded-For` without an explicit deployment guarantee;
+reformatting the decision log to satisfy a tool that damages it.
+
+**2026-08-02 — `plugin-release` now depends on `server-image`.** The 0.0.14
+release published plugin assets and then failed to build the server image,
+because the two jobs only shared `needs: test` and ran in parallel. The result
+was a BRAT-installable plugin speaking the schema-v4 protocol with no server
+image that understood it — the exact version skew the tag-equality guard exists
+to prevent, arriving through the back door. `plugin-release` now takes
+`needs: [test, server-image]`, so a failed image build means no release is
+published at all. Costs ~40s of serial release time. **Rules out**: publishing
+either artifact before the other is known to build.

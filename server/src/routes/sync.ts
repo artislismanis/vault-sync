@@ -76,10 +76,8 @@ export function registerSyncRoutes(
       .get(revisionId, vaultId) as RevisionRow | undefined;
 
   // Raw ciphertext bodies for chunk upload.
-  app.addContentTypeParser(
-    'application/octet-stream',
-    { parseAs: 'buffer' },
-    (_req, body, done) => done(null, body),
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) =>
+    done(null, body),
   );
 
   app.put<{ Params: { vaultId: string; revisionId: string; seq: string } }>(
@@ -173,7 +171,9 @@ export function registerSyncRoutes(
       }
 
       let item = db
-        .prepare('SELECT id, path_hmac, encrypted_path_b64 FROM item WHERE vault_id = ? AND path_hmac = ?')
+        .prepare(
+          'SELECT id, path_hmac, encrypted_path_b64 FROM item WHERE vault_id = ? AND path_hmac = ?',
+        )
         .get(vaultId, body.pathHmac) as ItemRow | undefined;
       if (!item) {
         const record: ItemRecord = {

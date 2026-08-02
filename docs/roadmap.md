@@ -7,7 +7,7 @@ nas-sync-plugin) plus the owner's own obsidian-agent-sandbox.
 
 This file is **execution order and provenance**, not scope. Scope lives in
 [mvp-spec.md](mvp-spec.md) — its Phase 2/Phase 3 lists are the source of truth
-for *what* is planned; this file says *which order* and *why*, and traces each
+for _what_ is planned; this file says _which order_ and _why_, and traces each
 item back to where the idea came from. Don't let the two diverge: if an item
 here changes Phase 2/3 scope, update `mvp-spec.md` too. Adopting a Tier 2 item
 requires a decision entry in [decisions.md](decisions.md) first.
@@ -18,13 +18,13 @@ Before ranking, five "we might already do this" candidates were checked
 against the code. All five are already correct — they are not backlog items,
 just documented here so nobody re-investigates them:
 
-| Pattern | Where |
-|---|---|
-| `node-diff3` `excludeFalseConflicts: true` (identical concurrent edits don't spuriously conflict) | `plugin/src/merge/diff3.ts:11` |
-| Change detection compares size **and** mtime, not mtime alone | `plugin/src/sync/planner.ts:105`, `plugin/src/sync/engine.ts:765` |
-| Self-write suppression (engine writes don't re-trigger as external edits) | `plugin/src/sync/engine.ts:92` |
-| Renderer yielding during large batch transfers (no Obsidian UI freeze) | `plugin/src/sync/engine.ts:64` (`yieldMain`), called at upload/download/spool loop points |
-| Poison isolation (one bad blob doesn't stall a batch; failures retry next sync) | `plugin/src/sync/engine.ts:186-216` |
+| Pattern                                                                                           | Where                                                                                     |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `node-diff3` `excludeFalseConflicts: true` (identical concurrent edits don't spuriously conflict) | `plugin/src/merge/diff3.ts:11`                                                            |
+| Change detection compares size **and** mtime, not mtime alone                                     | `plugin/src/sync/planner.ts:105`, `plugin/src/sync/engine.ts:765`                         |
+| Self-write suppression (engine writes don't re-trigger as external edits)                         | `plugin/src/sync/engine.ts:92`                                                            |
+| Renderer yielding during large batch transfers (no Obsidian UI freeze)                            | `plugin/src/sync/engine.ts:64` (`yieldMain`), called at upload/download/spool loop points |
+| Poison isolation (one bad blob doesn't stall a batch; failures retry next sync)                   | `plugin/src/sync/engine.ts:186-216`                                                       |
 
 ## Tier 1 — near-term, high-value, low-risk
 
@@ -32,15 +32,15 @@ No architecture decision needed; build directly.
 
 - **Settings-tab styling** — underline tabs (flat button, accent underline on
   active) replacing the heavier `mod-cta` filled-button treatment, applied to
-  both the settings pane and the version-history modal. *Implemented
-  2026-07-12* — see `decisions.md`. Source: obsidian-agent-sandbox
+  both the settings pane and the version-history modal. _Implemented
+  2026-07-12_ — see `decisions.md`. Source: obsidian-agent-sandbox
   `renderTabs`/`sandbox-settings-tab` CSS.
 - **Conflict-review UX**: a banner on note-open when a `(conflict …)` sibling
   exists for that note, a status-bar state change (ok/warning), and a
   unified-diff review pane (line diff + char-level highlighting, collapsed
   unchanged context). We already generate conflict siblings correctly
   (`docs/explanation/sync-protocol.md`) and already have diff-highlight CSS
-  (`plugin/styles.css` `.vault-sync-diff-*`); the actual gap is *discovery* —
+  (`plugin/styles.css` `.vault-sync-diff-*`); the actual gap is _discovery_ —
   today a conflict is a silently-created file the user has to notice in the
   file tree. Source: obsidian-conflict-manager (`notifier.ts`, `indicator.ts`,
   `unified-diff.ts`).
@@ -51,7 +51,7 @@ No architecture decision needed; build directly.
   unrelated projects (Osync-p, ObsidianGoogleDriveSync), which is a stronger
   signal than a single sighting, and it serves hard rule #4 (never lose data)
   directly. Companion: a delete-burst detector (rate-based: N deletes within a
-  trailing window) to catch bursts *between* reconciliation passes, which the
+  trailing window) to catch bursts _between_ reconciliation passes, which the
   batch-level guard alone would miss.
 - **Blocked-file tracking by (size, mtime)** to stop retry-storming permanent
   errors (quota exceeded, oversized) every reconciliation cycle instead of
@@ -73,7 +73,7 @@ decided explicitly, not defaulted into.
   Seen in both Osync-p (MinIO) and obsyncian (R2), with batched presigns and
   bounded concurrency in the latter — two independent implementations
   converging on the same design. **The cost**: it makes the object store a
-  *second* internet-exposed surface. Osync-p's own docs require two sibling
+  _second_ internet-exposed surface. Osync-p's own docs require two sibling
   subdomains and an exact `MINIO_PUBLIC_URL` match, which cuts against our
   current single-endpoint / one-reverse-proxy-or-VPN model
   (`docs/explanation/architecture.md`, `docs/tutorials/getting-started.md`

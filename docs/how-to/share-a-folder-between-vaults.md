@@ -33,7 +33,7 @@ In the other vault:
 
 1. Settings → **Connection** tab, log in with the same account, then
    **Folder connections** → pick the shared vault from the dropdown, enter
-   its passphrase, and the local folder to use in *this* vault — it doesn't
+   its passphrase, and the local folder to use in _this_ vault — it doesn't
    have to match the first vault's folder name, e.g. `Shared/Reference`.
 2. Click **Connect**.
 

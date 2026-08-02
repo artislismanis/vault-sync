@@ -131,7 +131,11 @@ describe('sync routes', () => {
   }
 
   async function heads() {
-    const res = await app.inject({ method: 'GET', url: `/vaults/${vaultId}/heads`, headers: auth() });
+    const res = await app.inject({
+      method: 'GET',
+      url: `/vaults/${vaultId}/heads`,
+      headers: auth(),
+    });
     expect(res.statusCode).toBe(200);
     return res.json().items as {
       itemId: string;
