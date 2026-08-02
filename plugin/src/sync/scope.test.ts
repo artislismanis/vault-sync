@@ -17,6 +17,10 @@ function fakeVault(initialFiles: Record<string, { mtime: number; size: number }>
     for (let i = 1; i < parts.length; i++) folders.add(parts.slice(0, i).join('/'));
   }
   const trashed: string[] = [];
+  const isDirectChild = (parent: string, candidate: string) =>
+    candidate !== parent &&
+    candidate.startsWith(`${parent}/`) &&
+    !candidate.slice(parent.length + 1).includes('/');
 
   const vault = {
     files,
@@ -24,7 +28,19 @@ function fakeVault(initialFiles: Record<string, { mtime: number; size: number }>
     trashed,
     getFiles: () => [...files.values()],
     getFileByPath: (p: string) => files.get(p) ?? null,
-    getFolderByPath: (p: string) => (folders.has(p) ? { path: p } : null),
+    // children is computed live from current files/folders, matching real
+    // TFolder — this is what lets pruneEmptyParents observe a folder
+    // becoming empty after a file (or child folder) is trashed.
+    getFolderByPath: (p: string) =>
+      folders.has(p)
+        ? {
+            path: p,
+            children: [
+              ...[...files.keys()].filter((fp) => isDirectChild(p, fp)),
+              ...[...folders].filter((fp) => isDirectChild(p, fp)),
+            ],
+          }
+        : null,
     createFolder: async (p: string) => void folders.add(p),
     readBinary: async (f: { content: Uint8Array }) => f.content.buffer,
     modifyBinary: async (
@@ -43,8 +59,10 @@ function fakeVault(initialFiles: Record<string, { mtime: number; size: number }>
       files.set(p, file);
       return file;
     },
+    // f may be a file or a folder — both are plain {path} in this fake.
     trash: async (f: { path: string }) => {
       files.delete(f.path);
+      folders.delete(f.path);
       trashed.push(f.path);
     },
   };
@@ -96,6 +114,15 @@ describe('VaultScope — mount mode', () => {
     await scope.remove('missing.md'); // no-op
   });
 
+  it('remove prunes empty folders up to but not past the mount root', async () => {
+    const vault = fakeVault({ 'Reference/notes/x.md': { mtime: 1, size: 10 } });
+    const scope = new VaultScope({ vault, mountPath: 'Reference', normalizePath: (p) => p });
+    await scope.remove('notes/x.md');
+    expect(vault.trashed).toEqual(['Reference/notes/x.md', 'Reference/notes']);
+    // The mount point itself is never pruned — it's not synced content.
+    expect(vault.folders.has('Reference')).toBe(true);
+  });
+
   it('policy-excludes .obsidian paths (config-write injection guard)', () => {
     const scope = new VaultScope({
       vault: fakeVault(),
@@ -134,6 +161,24 @@ describe('VaultScope — whole-vault mode', () => {
     expect(paths).toEqual(['Reference/x.md', 'notes/a.md']);
     expect(await scope.isRootPresent()).toBe(true);
     expect(scope.toLocalPath('notes/a.md')).toBe('notes/a.md');
+  });
+
+  it('remove prunes now-empty parent folders, deepest first', async () => {
+    const vault = fakeVault({
+      'a/b/x.md': { mtime: 1, size: 1 },
+      'a/keep.md': { mtime: 2, size: 2 },
+    });
+    const scope = new VaultScope({ vault, mountPath: '', normalizePath: (p) => p });
+
+    await scope.remove('a/b/x.md');
+    expect(vault.trashed).toEqual(['a/b/x.md', 'a/b']);
+    expect(vault.folders.has('a/b')).toBe(false);
+    // 'a' still holds keep.md — must survive.
+    expect(vault.folders.has('a')).toBe(true);
+
+    await scope.remove('a/keep.md');
+    expect(vault.trashed).toEqual(['a/b/x.md', 'a/b', 'a/keep.md', 'a']);
+    expect(vault.folders.has('a')).toBe(false);
   });
 
   it('policy-excludes mounted prefixes (root and children), live', () => {

@@ -154,13 +154,40 @@ export class VaultScope implements SyncScope {
   async remove(path: string): Promise<void> {
     if (this.useConfig(path)) return this.opts.configFs!.remove(path);
     const file = this.fileFor(path);
+    if (!file) return;
     // Vault-local trash: recoverable, and .trash is outside getFiles().
-    if (file) await this.opts.vault.trash(file, false);
+    const localPath = file.path;
+    await this.opts.vault.trash(file, false);
+    await this.pruneEmptyParents(localPath);
   }
 
   async exists(path: string): Promise<boolean> {
     if (this.useConfig(path)) return (await this.opts.configFs!.stat(path)) !== null;
     return this.fileFor(path) !== null;
+  }
+
+  /**
+   * After a delete, removes now-empty ancestor folders one level at a time,
+   * deepest first. Stops at the mount root for folder connections (that
+   * folder is the mount point, not synced content) or the vault root for
+   * the main connection — either way, never touches anything above scope.
+   */
+  private async pruneEmptyParents(localPath: string): Promise<void> {
+    const { vault } = this.opts;
+    const stopAt = this.isMount ? this.opts.normalizePath(this.opts.mountPath) : '';
+    const parts = localPath.split('/').slice(0, -1);
+    while (parts.length > 0) {
+      const dir = parts.join('/');
+      if (dir === stopAt) break;
+      const folder = vault.getFolderByPath(dir);
+      if (!folder || folder.children.length > 0) break;
+      try {
+        await vault.trash(folder, false);
+      } catch {
+        break; // races with concurrent activity are fine — leave it
+      }
+      parts.pop();
+    }
   }
 
   private async ensureParentFolders(localPath: string): Promise<void> {

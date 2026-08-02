@@ -48,7 +48,3 @@ export function decryptPath(keys: VaultKeys, encryptedPathB64: string): string {
   const sealed = sodium.from_base64(encryptedPathB64, sodium.base64_variants.ORIGINAL);
   return sodium.to_string(open(keys.pathKey, sealed, PATH_AAD));
 }
-
-/** Encrypted vault name uses the path key (it's the same kind of secret). */
-export const encryptVaultName = encryptPath;
-export const decryptVaultName = decryptPath;

@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 // rebuildable at any time via `admin rebuild-index`. Never the source of
 // truth (docs/decisions.md); losing this file must lose nothing.
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS vault (
@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS vault (
   kdf_json      TEXT NOT NULL,
   wrapped_vmk_b64 TEXT NOT NULL,
   created_at    TEXT NOT NULL,
-  kind          TEXT NOT NULL DEFAULT 'vault'
+  kind          TEXT NOT NULL DEFAULT 'vault',
+  -- Plaintext, server-visible (docs/decisions.md 2026-07-13). NULL only for
+  -- pre-migration vaults not yet backfilled by a device that knows the name.
+  name          TEXT
 );
 CREATE TABLE IF NOT EXISTS item (
   id            TEXT PRIMARY KEY,
@@ -67,6 +70,11 @@ export function openDb(dataDir: string): Db {
     if (version < 3) {
       // v3: vault kind (full vault vs folder-share), for dropdown filtering.
       db.exec("ALTER TABLE vault ADD COLUMN kind TEXT NOT NULL DEFAULT 'vault';");
+    }
+    if (version < 4) {
+      // v4: plaintext vault name (docs/decisions.md 2026-07-13). NULL until a
+      // key-holding device backfills it from its cached decrypted name.
+      db.exec('ALTER TABLE vault ADD COLUMN name TEXT;');
     }
   }
   if (version < SCHEMA_VERSION) {

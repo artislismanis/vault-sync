@@ -583,6 +583,70 @@ only — the `display()`/`render()` re-render model and tab-switching logic are
 unchanged. **Rules out**: nothing structural; purely a shared CSS class swap
 across both tab bars so they read as one consistent pattern.
 
+**2026-07-13 — Vault names become server-visible plaintext, superseding the
+2026-07-11 "vault names are E2EE like everything else" decision.** Owner
+chose this explicitly after being shown the trade-off: real-world two-machine
+use surfaced that a device could only show a vault's name after entering its
+passphrase once (name was encrypted under the per-vault VMK), so a second PC
+just showed "vault created \<date\> (guid)" until unlocked — confusing, and
+worse than Obsidian Sync's actual UX. Two alternatives were on the table
+(an account-level encryption key gating names behind one extra per-device
+passphrase; or keeping E2EE names with better pre-unlock copy) — owner picked
+plaintext names, judging the trade-off worth it for a single-user
+self-hosted deployment. This is a *narrower* exception than it may look:
+`shared/src/protocol/rest.ts` already carried the identical precedent for
+`kind` (2026-07-12) — structural account metadata the server was always
+allowed to see, distinct from hard rule 1's actual scope (file content, file
+names, *within-vault* paths, key material), none of which move. Protocol:
+`createVaultRequestSchema`/`updateVaultRequestSchema`/`vaultSummarySchema`
+swap `encryptedNameB64` for a plain `name` field (`shared/src/protocol/rest.ts`).
+Server: `vault` table gains a nullable `name` column (schema v3→v4,
+`ALTER TABLE ... ADD COLUMN name` — `server/src/store/db.ts`), threaded
+through `metadata-log.ts`'s sidecar/index/rebuild path exactly like `kind`.
+The legacy `encrypted_name_b64` column and `VaultRecord.encryptedNameB64`
+field stay (unused, always `''` on new rows) rather than being dropped —
+cheap to keep, and preserves a slim path to recover a name later if this is
+ever revisited. `admin vault-list` now prints real names instead of "names
+are E2EE"; plugin `settings.ts` reads `vault.name` directly from `GET
+/vaults` (no passphrase needed to display it) and rename no longer needs the
+vault passphrase — it's a plain `PATCH { name }`. Migration: existing vaults
+have `name: null` server-side (only the old E2EE ciphertext, now unused,
+survives in the sidecar). A device backfills opportunistically on every
+settings-list load (`backfillMissingNames` in `settings.ts`) using whatever
+name it has cached locally for its own connected vault / folder connections
+— `PATCH`ing the plaintext name back. A vault no local device has ever
+unlocked stays `null` until one does. **Rules out**: decrypting the legacy
+ciphertext server-side (server never gets key material, full stop); a "names
+opt-in" toggle (extra state for a single-user setup with no real adversary
+inside the trust boundary). **Consequence accepted**: the server, its admin,
+and any backup of the bucket can now read vault names (not file content,
+file names, or paths — those remain fully E2EE with no exceptions).
+
+**2026-07-13 — Settings sync hot-applies pulled enabled-plugins, CSS
+snippets, and theme instead of only prompting to reload.** Real-world testing
+found that after a settings-sync pull, `community-plugins.json` and
+`appearance.json` (snippet enabled-state, theme) were written correctly to
+disk but Obsidian doesn't react to on-disk changes to either without a
+reload — the engine's existing "reload to apply" notice
+(`plugin/src/sync/engine.ts`) was accurate but left the user manually
+enabling plugins after every sync. New `plugin/src/sync/hot-apply.ts`
+reconciles Obsidian's live state against the pulled files via `app.plugins`
+(`enablePlugin`/`disablePlugin`, session-only — doesn't rewrite
+`community-plugins.json`, since the sync engine already owns that file) and
+`app.customCss` (`readSnippets`, `setCssEnabledStatus`, `setTheme`), invoked
+once per sync run that touched a config path (`EngineOptions.onConfigPulled`,
+wired from `main.ts`'s main-connection `buildConnection` only — folder
+connections never touch `.obsidian`). Both APIs are internal/undocumented —
+not in `obsidian.d.ts`, free to change shape or be absent (older/newer
+Obsidian, mobile) — so every property/method access is capability-checked
+and the whole call is wrapped so a failure never breaks sync; the "reload to
+apply" notice stays as-is, now genuinely just a fallback for hotkeys and
+other config Obsidian only reads at load. **Rules out**: rewriting
+`community-plugins.json`/`appearance.json` from the hot-apply path itself
+(would fight the sync engine for ownership of those files); depending on
+these internal APIs existing at all — absence degrades silently to the
+pre-existing reload-prompt behavior, never an error.
+
 **2026-08-02 — Dependabot version updates: weekly and grouped for
 minor/patch, one PR per major; GitHub Actions pinned to commit SHAs.**
 Dependabot alerts and security updates had been off since the repo was

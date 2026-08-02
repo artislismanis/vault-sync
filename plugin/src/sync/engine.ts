@@ -86,6 +86,14 @@ export interface EngineOptions {
   notify: (message: string) => void;
   /** Live status line (status bar / progress toast); null clears it. */
   status: (message: string | null) => void;
+  /**
+   * Best-effort hot-apply of pulled `.obsidian` config (enabled plugins, CSS
+   * snippets, theme/appearance) via Obsidian's own APIs — called once per
+   * sync run that wrote or deleted a config path, before the "reload to
+   * apply" notice. Optional (engine tests run without an App); errors are
+   * swallowed by the engine so a hot-apply failure never breaks sync.
+   */
+  onConfigPulled?: () => void | Promise<void>;
 }
 
 export class SyncEngine {
@@ -121,8 +129,14 @@ export class SyncEngine {
         total += await this.fullSync();
       } while (this.queued);
       if (this.configPulled) {
-        // Obsidian reads most config at app load; one notice per run.
         this.configPulled = false;
+        try {
+          await this.opts.onConfigPulled?.();
+        } catch {
+          // Hot-apply is best-effort — fall through to the reload notice.
+        }
+        // Hot-apply covers plugins/snippets/appearance; hotkeys and other
+        // config Obsidian only reads at load still need the reload.
         this.opts.notify('vault-sync: Obsidian settings updated — reload to apply');
       }
       return total;

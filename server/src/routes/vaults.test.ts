@@ -31,7 +31,7 @@ describe('vault routes: update & delete', () => {
       url: '/vaults',
       headers: auth(token),
       payload: {
-        encryptedNameB64: 'bmFtZQ==',
+        name: 'my vault',
         kdf: kdf('c2FsdA=='),
         wrappedVmkB64: 'dm1r',
         kind: 'vault',
@@ -76,29 +76,29 @@ describe('vault routes: update & delete', () => {
   it('requires auth for PATCH and DELETE', async () => {
     const id = await createVault();
     expect(
-      (await app.inject({ method: 'PATCH', url: `/vaults/${id}`, payload: { encryptedNameB64: 'eA==' } }))
+      (await app.inject({ method: 'PATCH', url: `/vaults/${id}`, payload: { name: 'x' } }))
         .statusCode,
     ).toBe(401);
     expect((await app.inject({ method: 'DELETE', url: `/vaults/${id}` })).statusCode).toBe(401);
   });
 
-  it('PATCH renames: updates encrypted name + sidecar, leaves the envelope', async () => {
+  it('PATCH renames: updates the plaintext name + sidecar, leaves the envelope', async () => {
     const id = await createVault();
     const res = await app.inject({
       method: 'PATCH',
       url: `/vaults/${id}`,
       headers: auth(token),
-      payload: { encryptedNameB64: 'bmV3bmFtZQ==' },
+      payload: { name: 'renamed vault' },
     });
     expect(res.statusCode).toBe(204);
 
     const v = await summary(id);
-    expect(v.encryptedNameB64).toBe('bmV3bmFtZQ==');
+    expect(v.name).toBe('renamed vault');
     expect(v.wrappedVmkB64).toBe('dm1r'); // unchanged
     expect(v.kdf.saltB64).toBe('c2FsdA==');
 
     const sidecar = JSON.parse(new TextDecoder().decode(await store.get(vaultMetaKey(id))));
-    expect(sidecar.encryptedNameB64).toBe('bmV3bmFtZQ==');
+    expect(sidecar.name).toBe('renamed vault');
   });
 
   it('PATCH changes passphrase: updates kdf + wrapped VMK, leaves the name', async () => {
@@ -114,7 +114,7 @@ describe('vault routes: update & delete', () => {
     const v = await summary(id);
     expect(v.wrappedVmkB64).toBe('bmV3dm1r');
     expect(v.kdf.saltB64).toBe('bmV3c2FsdA==');
-    expect(v.encryptedNameB64).toBe('bmFtZQ=='); // unchanged
+    expect(v.name).toBe('my vault'); // unchanged
   });
 
   it('PATCH rejects an empty / half-specified body', async () => {
@@ -141,7 +141,7 @@ describe('vault routes: update & delete', () => {
       method: 'PATCH',
       url: '/vaults/00000000-0000-4000-8000-000000000099',
       headers: auth(token),
-      payload: { encryptedNameB64: 'eA==' },
+      payload: { name: 'x' },
     });
     expect(res.statusCode).toBe(404);
   });

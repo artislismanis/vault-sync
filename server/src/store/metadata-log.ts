@@ -8,19 +8,26 @@ import type { Db } from './db';
 // and the index is reconstructible from a bucket scan.
 //
 // Key layout:
-//   meta/vaults/{vaultId}.json                 vault record (kdf, wrapped VMK, encrypted name)
+//   meta/vaults/{vaultId}.json                 vault record (kdf, wrapped VMK, name)
 //   meta/{vaultId}/items/{itemId}.json         item record (path hmac, encrypted path)
 //   meta/{vaultId}/revisions/{revisionId}.json revision record (parents, size, timestamps)
 //   blobs/{vaultId}/{revisionId}               ciphertext
 
 export interface VaultRecord {
   id: string;
+  // Legacy E2EE ciphertext name, pre-2026-07-13. No longer written (new
+  // records get ''); old values are preserved verbatim through rebuilds in
+  // case a name is ever recovered by other means, but nothing reads them.
   encryptedNameB64: string;
   kdfJson: string;
   wrappedVmkB64: string;
   createdAt: string;
   // Absent in sidecars written before v3; defaulted to 'vault' on read.
   kind?: VaultKind;
+  // Plaintext, server-visible name (docs/decisions.md 2026-07-13). Absent in
+  // sidecars written before v4, or null for a not-yet-backfilled vault;
+  // defaulted to null on read either way.
+  name?: string | null;
 }
 
 export interface ItemRecord {
@@ -88,9 +95,9 @@ export async function writeRevisionSidecar(
 
 export function indexVault(db: Db, record: VaultRecord): void {
   db.prepare(
-    `INSERT OR REPLACE INTO vault (id, encrypted_name_b64, kdf_json, wrapped_vmk_b64, created_at, kind)
-     VALUES (@id, @encryptedNameB64, @kdfJson, @wrappedVmkB64, @createdAt, @kind)`,
-  ).run({ ...record, kind: record.kind ?? 'vault' });
+    `INSERT OR REPLACE INTO vault (id, encrypted_name_b64, kdf_json, wrapped_vmk_b64, created_at, kind, name)
+     VALUES (@id, @encryptedNameB64, @kdfJson, @wrappedVmkB64, @createdAt, @kind, @name)`,
+  ).run({ ...record, kind: record.kind ?? 'vault', name: record.name ?? null });
 }
 
 export function indexItem(db: Db, record: ItemRecord): void {
@@ -148,7 +155,7 @@ export async function deleteVault(
 }
 
 export interface VaultPatch {
-  encryptedNameB64?: string;
+  name?: string;
   kdfJson?: string;
   wrappedVmkB64?: string;
 }
@@ -173,16 +180,18 @@ export async function updateVault(
         wrapped_vmk_b64: string;
         created_at: string;
         kind: VaultKind | null;
+        name: string | null;
       }
     | undefined;
   if (!row) return false;
   const record: VaultRecord = {
     id: row.id,
-    encryptedNameB64: patch.encryptedNameB64 ?? row.encrypted_name_b64,
+    encryptedNameB64: row.encrypted_name_b64,
     kdfJson: patch.kdfJson ?? row.kdf_json,
     wrappedVmkB64: patch.wrappedVmkB64 ?? row.wrapped_vmk_b64,
     createdAt: row.created_at,
     kind: row.kind ?? 'vault',
+    name: patch.name ?? row.name,
   };
   await writeVaultSidecar(store, record);
   indexVault(db, record);
