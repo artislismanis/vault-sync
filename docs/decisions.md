@@ -760,3 +760,24 @@ to prevent, arriving through the back door. `plugin-release` now takes
 `needs: [test, server-image]`, so a failed image build means no release is
 published at all. Costs ~40s of serial release time. **Rules out**: publishing
 either artifact before the other is known to build.
+
+**2026-08-02 — Bundled MinIO images pinned to RELEASE tags;
+`@types/better-sqlite3` brought up to 9.x.** Both compose files ran
+`minio/minio` and `minio/mc` untagged, i.e. implicit `:latest` — so a redeploy
+could silently swap the image and nothing recorded which build a working stack
+had run. Pinned to exactly what `:latest` resolved to at the time
+(`RELEASE.2025-09-07T16-13-09Z` and `RELEASE.2025-08-13T08-35-41Z`), so this is
+a no-op functionally and a large gain in reproducibility. Worth noting *why*
+that matters more than it looks: MinIO's community images have not been rebuilt
+since September 2025, so `:latest` is a frozen pointer that could lurch a long
+way if upstream ever resumes. Pinning also gives the `/deploy` Dependabot entry
+something to track, though MinIO's date-based tags are handled less reliably
+than semver — treat any such PR as a bonus, not the mechanism of record. The
+`vault-sync` image stays a `${VAULT_SYNC_VERSION:-latest}` interpolation
+deliberately: which server version a deployment runs is a deploy-time choice,
+not a repo change. Separately, `@types/better-sqlite3` had drifted to 7.6.13
+against a 12.11.1 runtime; better-sqlite3 ships no types of its own
+(`files` covers only `binding.gyp`, `src`, `lib`, `deps`), so the types package
+is load-bearing rather than incidental. Moved to `^9.6.0`, the current release,
+which typechecks clean. **Rules out**: `:latest` in any compose file we ship;
+dropping `@types/better-sqlite3` in favour of bundled types that do not exist.
