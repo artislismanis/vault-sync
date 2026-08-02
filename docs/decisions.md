@@ -582,3 +582,54 @@ obsidian-agent-sandbox (`sandbox-settings-tab`/`is-active`). Presentational
 only — the `display()`/`render()` re-render model and tab-switching logic are
 unchanged. **Rules out**: nothing structural; purely a shared CSS class swap
 across both tab bars so they read as one consistent pattern.
+
+**2026-08-02 — Dependabot version updates: weekly and grouped for
+minor/patch, one PR per major; GitHub Actions pinned to commit SHAs.**
+Dependabot alerts and security updates had been off since the repo was
+created, so four high-severity transitive advisories (`find-my-way`
+HTTP/2 DDoS and `fast-uri` host confusion, both Fastify runtime;
+`postcss` source-map path traversal and `brace-expansion` OOM, both
+dev-only) sat unnoticed and unreported. Alerts are now enabled, and
+`.github/dependabot.yml` adds version updates for three ecosystems: npm
+(a single `/` entry — Dependabot reads the root `workspaces` field and
+covers server/plugin/shared against the one lockfile), github-actions,
+and docker (`/server` Dockerfile plus `/deploy` compose). Cadence is
+weekly on Monday with minor+patch grouped per ecosystem, so routine
+upkeep is one batched chore; **npm majors deliberately fall through
+ungrouped** — a breaking bump of Fastify or better-sqlite3 gets its own
+PR with its own CI run rather than hiding inside a green group. Two
+deliberate narrowings: the `node` base image ignores major bumps (odd
+Node majors are non-LTS; LTS→LTS is a deliberate call), and
+`docker-compose.dev.yml` is uncovered (throwaway test harness). Actions
+are pinned to full commit SHAs with the tag in a trailing comment,
+at the tip of their *current* major (checkout/setup-node v4.4.0,
+login-action v3.7.0, build-push-action v6.19.2) rather than jumped to
+latest — behaviour-preserving, with the several-major catch-up arriving
+as a Dependabot PR that CI actually runs. **Rules out**: auto-merge of
+any Dependabot PR (nothing here merges without a human — and note
+`release.yml` only triggers on tag push, so bumps to
+`docker/login-action`/`docker/build-push-action` are never exercised by
+CI and must be reviewed by hand); mutable `@v4`-style action tags, which
+let an upstream tag move silently into a public release pipeline that
+publishes to ghcr.io.
+
+**2026-08-02 — CI hardened: CodeQL, dependency review, and per-job least
+privilege.** Alongside enabling Dependabot, the repo had no static analysis
+(`code-scanning` returned "no analysis found") and both workflows granted
+tokens far wider than any job needed — `release.yml` in particular applied
+`contents: write` + `packages: write` workflow-wide, so its `test` job held a
+release-and-publish-capable token while running `npm ci`, i.e. while executing
+third-party install scripts. For a repo whose pipeline publishes both a BRAT
+plugin release and a `ghcr.io` image consumed by a NAS, that is the exposure
+worth closing first. Added `codeql.yml` (javascript-typescript, `build-mode:
+none` since the tree is all TS, `security-extended` queries, on push/PR plus a
+weekly cron — the cron matters because it re-scans unchanged code against newly
+published queries) and `dependency-review.yml` (fails a PR introducing a
+high-severity advisory; complements Dependabot, which only reports what is
+already on `main`). Both workflows now declare `permissions: contents: read` at
+the top and widen only per job (`plugin-release`: `contents: write`;
+`server-image`: `packages: write`), and every `actions/checkout` sets
+`persist-credentials: false` so no usable git token is left on disk for install
+scripts. **Rules out**: CodeQL "default setup" via the UI (it conflicts with a
+committed workflow file, and the file is reviewable and SHA-pinned like
+everything else); workflow-wide write permissions as a convenience.
