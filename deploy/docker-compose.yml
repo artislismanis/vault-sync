@@ -51,7 +51,11 @@ services:
 
   # --- optional bundled MinIO (profile: bundled-minio) ----------------------
   minio:
-    image: minio/minio
+    # Pinned, not :latest — an untagged image silently changes under you on
+    # any redeploy, and nothing records which build a working stack ran.
+    # These are exactly what :latest resolved to when pinned; MinIO's
+    # community images have not been rebuilt since Sept 2025.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     profiles: [bundled-minio]
     command: server /data --console-address ":9001"
     environment:
@@ -70,7 +74,7 @@ services:
       retries: 12
 
   minio-init:
-    image: minio/mc
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
     profiles: [bundled-minio]
     depends_on:
       minio:

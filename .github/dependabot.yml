@@ -61,13 +61,17 @@ updates:
   #            ghcr.io server image. Both build and runtime stages share the
   #            tag on purpose (better-sqlite3 NODE_MODULE_VERSION must match);
   #            Dependabot bumps both together because they are the same image.
-  # /deploy  — docker-compose.yml. Inert today: the vault-sync image tag is a
-  #            compose interpolation (${VAULT_SYNC_VERSION:-latest}) and the
-  #            bundled-minio profile uses untagged minio images, neither of
-  #            which Dependabot can version. Listed so it starts working the
-  #            moment those tags are pinned.
+  # /deploy  — docker-compose.yml. The bundled-minio images are now pinned to
+  #            concrete RELEASE tags, so there is something to track. Caveat:
+  #            MinIO uses date-based tags, which Dependabot handles less
+  #            reliably than semver — treat any PR here as a bonus, not the
+  #            mechanism of record. The vault-sync image itself stays a
+  #            compose interpolation (${VAULT_SYNC_VERSION:-latest}) and is
+  #            deliberately not trackable: upgrades there are a deploy-time
+  #            choice, not a repo change.
   # docker-compose.dev.yml at the repo root is intentionally NOT covered — it
-  # is a throwaway test harness, pinning it is pure maintenance noise.
+  # is a throwaway test harness. Its images are pinned for reproducibility,
+  # but a PR to bump them would be noise.
   - package-ecosystem: docker
     directories:
       - '/server'
