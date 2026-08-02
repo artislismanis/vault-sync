@@ -25,7 +25,9 @@ function fakeFs(): SpoolFs & { paths: Map<string, ArrayBuffer> } {
       for (const key of [...paths.keys()]) if (key.startsWith(`${p}/`)) paths.delete(key);
     },
     async list(p) {
-      const folders = [...dirs].filter((d) => d.startsWith(`${p}/`) && !d.slice(p.length + 1).includes('/'));
+      const folders = [...dirs].filter(
+        (d) => d.startsWith(`${p}/`) && !d.slice(p.length + 1).includes('/'),
+      );
       return { files: [], folders };
     },
   };

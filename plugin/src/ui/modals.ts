@@ -497,9 +497,7 @@ export class EditVaultModal extends Modal {
                 }
               }),
           );
-          del.addButton((cancel) =>
-            cancel.setButtonText('Cancel').onClick(() => this.render()),
-          );
+          del.addButton((cancel) => cancel.setButtonText('Cancel').onClick(() => this.render()));
         }),
     );
   }

@@ -370,6 +370,11 @@ describe('convergence properties', () => {
     rmSync(dataDir, { recursive: true, force: true });
   });
 
+  // Every SimClient provisions a real device via /login, and all tests here
+  // share one app instance — so this file's total login count is bounded by
+  // the /login rate limit (see routes/auth.ts). If a new test starts failing
+  // with 401s on authenticated routes, that budget is the reason: the login
+  // returned 429 and there was no token to use.
   async function makeClients(count: number, vaultId: string, keys: VaultKeys, clock: () => number) {
     const clients: SimClient[] = [];
     for (let i = 0; i < count; i++) {

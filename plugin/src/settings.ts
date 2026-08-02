@@ -660,7 +660,9 @@ export class VaultSyncSettingTab extends PluginSettingTab {
               settings.vaultName = null;
               await this.plugin.saveSettings();
               await this.forgetConnectionState(vaultId);
-              new Notice('vault-sync: disconnected — files stay put, the server vault is untouched');
+              new Notice(
+                'vault-sync: disconnected — files stay put, the server vault is untouched',
+              );
               await this.refreshVaultsAndRender();
               this.startSyncInBackground();
             }),
@@ -730,7 +732,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           for (const vault of connectableVaults) {
             dropdown.addOption(
               vault.id,
-              vault.name ?? `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
+              vault.name ??
+                `Vault created ${vault.createdAt.slice(0, 10)} (${vault.id.slice(0, 8)})`,
             );
           }
           this.selectedFolderVaultId = connectableVaults[0]?.id ?? null;

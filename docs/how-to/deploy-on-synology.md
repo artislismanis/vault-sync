@@ -69,7 +69,7 @@ real path-style S3 (`HeadBucket`, `Put`/`Get`/`DeleteObject`,
 - **MinIO on the NAS** (existing or bundled via the compose profile) —
   recommended default, matches `docs/decisions.md`'s "MinIO already on NAS"
   rationale.
-- **Synology C2 Object Storage** — Synology's own S3-compatible *cloud*
+- **Synology C2 Object Storage** — Synology's own S3-compatible _cloud_
   service. DSM has no built-in on-box S3-compatible object store of its own
   (Cloud Sync talks to various providers including C2, but that's a sync
   target, not a server-side storage API); C2 is relevant here only as a

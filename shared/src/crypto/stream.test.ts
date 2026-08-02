@@ -62,9 +62,9 @@ describe('secretstream blob format v2', () => {
 
     // Same ciphertext under a different revision id (server splice attempt).
     const otherRev = '00000000-0000-4000-8000-000000000002';
-    expect(() => createStreamDecryptor(key, otherRev, headerB64).pullChunk(ciphertexts[0]!)).toThrow(
-      StreamDecryptionError,
-    );
+    expect(() =>
+      createStreamDecryptor(key, otherRev, headerB64).pullChunk(ciphertexts[0]!),
+    ).toThrow(StreamDecryptionError);
   });
 
   it('exposes truncation via the missing FINAL tag', () => {

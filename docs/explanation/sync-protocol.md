@@ -181,5 +181,5 @@ for cache misses. The cache itself is never synced.
 
 - No server-side merge, diff, dedup of plaintext, or search — impossible and
   undesired under E2EE.
-- No cross-*user* sharing semantics (folder connections are one user mounting
+- No cross-_user_ sharing semantics (folder connections are one user mounting
   their own additional vaults, not multi-user access control).

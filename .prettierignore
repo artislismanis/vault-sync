@@ -1,0 +1,8 @@
+# Prettier corrupts this file: it strips the space after ${VAR} in inline code
+# spans and rewrites **bold** decision headings as _*...*_. The decision log is
+# append-only prose, so there is nothing for a formatter to gain here.
+docs/decisions.md
+
+# Build output and vendored artifacts.
+dist/
+plugin/main.js

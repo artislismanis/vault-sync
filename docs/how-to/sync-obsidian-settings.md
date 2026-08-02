@@ -11,17 +11,17 @@ On each device: Vault Sync settings → **Settings sync** tab → turn on
 "Sync Obsidian settings on this device". Then pick categories (the
 granularity matches Obsidian Sync's own vault-configuration options):
 
-| Toggle | Covers | Notes |
-|---|---|---|
-| Main settings | `app.json` | Editor, files & links |
-| Appearance | `appearance.json` | Theme choice, fonts, interface |
-| Themes and snippets | `themes/`, `snippets/` | |
-| Hotkeys | `hotkeys.json` | |
-| Active core plugin list | `core-plugins.json` | |
-| Core plugin settings | `graph.json`, `daily-notes.json`, any other config files | Default bucket — future Obsidian config files land here |
-| Active community plugin list | `community-plugins.json` | |
-| Community plugin settings | each plugin's `data.json` | May contain other plugins' API tokens; they're stored E2E-encrypted on your server |
-| Installed community plugins | `main.js`, manifests, styles | Installed plugins follow you across devices. Synced code runs on this device; on mobile, usually leave this **off** (mobile wants different plugins) |
+| Toggle                       | Covers                                                   | Notes                                                                                                                                                |
+| ---------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Main settings                | `app.json`                                               | Editor, files & links                                                                                                                                |
+| Appearance                   | `appearance.json`                                        | Theme choice, fonts, interface                                                                                                                       |
+| Themes and snippets          | `themes/`, `snippets/`                                   |                                                                                                                                                      |
+| Hotkeys                      | `hotkeys.json`                                           |                                                                                                                                                      |
+| Active core plugin list      | `core-plugins.json`                                      |                                                                                                                                                      |
+| Core plugin settings         | `graph.json`, `daily-notes.json`, any other config files | Default bucket — future Obsidian config files land here                                                                                              |
+| Active community plugin list | `community-plugins.json`                                 |                                                                                                                                                      |
+| Community plugin settings    | each plugin's `data.json`                                | May contain other plugins' API tokens; they're stored E2E-encrypted on your server                                                                   |
+| Installed community plugins  | `main.js`, manifests, styles                             | Installed plugins follow you across devices. Synced code runs on this device; on mobile, usually leave this **off** (mobile wants different plugins) |
 
 Never synced, on purpose: `workspace*` files (per-device window layout) and
 Vault Sync's own plugin folder (it contains this device's credentials and

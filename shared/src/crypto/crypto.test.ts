@@ -2,7 +2,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { initSodium, getSodium } from './sodium';
 import { KdfParams, deriveKek } from './kdf';
 import { seal, open, DecryptionError } from './aead';
-import { createEnvelope, generateVmk, rewrapVmk, unwrapVmk, WrongPassphraseError } from './envelope';
+import {
+  createEnvelope,
+  generateVmk,
+  rewrapVmk,
+  unwrapVmk,
+  WrongPassphraseError,
+} from './envelope';
 import { deriveMacKey, normalizePath, pathHmac } from './path-hmac';
 
 beforeAll(async () => {

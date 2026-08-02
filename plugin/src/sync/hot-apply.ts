@@ -35,7 +35,10 @@ export interface ConfigReader {
 }
 
 export async function hotApplyConfig(app: InternalApp, configFs: ConfigReader): Promise<void> {
-  await Promise.allSettled([hotApplyPlugins(app, configFs), hotApplySnippetsAndTheme(app, configFs)]);
+  await Promise.allSettled([
+    hotApplyPlugins(app, configFs),
+    hotApplySnippetsAndTheme(app, configFs),
+  ]);
 }
 
 async function hotApplyPlugins(app: InternalApp, configFs: ConfigReader): Promise<void> {
@@ -82,7 +85,11 @@ async function hotApplySnippetsAndTheme(app: InternalApp, configFs: ConfigReader
     }
   }
 
-  if (typeof appearance.cssTheme === 'string' && css.setTheme && appearance.cssTheme !== css.theme) {
+  if (
+    typeof appearance.cssTheme === 'string' &&
+    css.setTheme &&
+    appearance.cssTheme !== css.theme
+  ) {
     try {
       css.setTheme(appearance.cssTheme);
     } catch {
@@ -91,7 +98,10 @@ async function hotApplySnippetsAndTheme(app: InternalApp, configFs: ConfigReader
   }
 }
 
-async function readJson(configFs: ConfigReader, canonical: string): Promise<Record<string, unknown> | null> {
+async function readJson(
+  configFs: ConfigReader,
+  canonical: string,
+): Promise<Record<string, unknown> | null> {
   try {
     if (!(await configFs.stat(canonical))) return null;
     const bytes = await configFs.read(canonical);

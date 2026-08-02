@@ -18,7 +18,12 @@ import { findPruneCandidates, pruneRevisions } from './prune';
 const VAULT = 'vault-1';
 const ITEM = 'item-1';
 
-const revision = (id: string, parentIds: string[], receivedAt: string, deleted = false): RevisionRecord => ({
+const revision = (
+  id: string,
+  parentIds: string[],
+  receivedAt: string,
+  deleted = false,
+): RevisionRecord => ({
   id,
   vaultId: VAULT,
   itemId: ITEM,

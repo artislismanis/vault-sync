@@ -1,5 +1,6 @@
 import Fastify, { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
+import rateLimit from '@fastify/rate-limit';
 import type { HealthResponse } from '@vault-sync/shared';
 import { version as SERVER_VERSION } from '../package.json';
 import type { Config } from './config';
@@ -25,6 +26,21 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     bodyLimit: 16 * 1024 * 1024,
   });
   await app.register(websocket);
+
+  // Baseline limit for every route. Sync is chatty, so this is deliberately
+  // loose — it exists to bound a runaway or hostile client, not to shape
+  // normal traffic. /login overrides it with something much stricter.
+  //
+  // Keyed on request.ip, which is the socket peer: behind a reverse proxy
+  // that is the proxy, so all clients share one bucket. Acceptable for a
+  // single-user server, and it still stops the attack that matters. Fixing
+  // it properly means trusting X-Forwarded-For, which is only safe if the
+  // server cannot also be reached directly — not a call to make by default.
+  await app.register(rateLimit, {
+    max: 600,
+    timeWindow: '1 minute',
+    allowList: (request) => request.url.split('?')[0] === '/healthz',
+  });
 
   const notifier = new Notifier();
   app.decorate('notifier', notifier);
