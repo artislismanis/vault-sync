@@ -21,6 +21,7 @@ import { isConfigPath, pickLwwHead } from './config-categories';
 import { threeWayMerge } from '../merge/diff3';
 import { contentHash } from './content-hash';
 import { findCanonicalPathCollisions } from './canonical-path';
+import { DeleteBurstTracker } from './delete-burst';
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.byteLength !== b.byteLength) return false;
@@ -89,6 +90,13 @@ export interface EngineOptions {
   /** Live status line (status bar / progress toast); null clears it. */
   status: (message: string | null) => void;
   /**
+   * Trailing-window delete-rate gate. Shared across every connection's
+   * engine when supplied — connections sync sequentially, so this is safe,
+   * and the failure modes it guards against aren't bounded by mount points.
+   * Defaults to a private per-engine instance if omitted (tests).
+   */
+  deleteBurst?: DeleteBurstTracker;
+  /**
    * Best-effort hot-apply of pulled `.obsidian` config (enabled plugins, CSS
    * snippets, theme/appearance) via Obsidian's own APIs — called once per
    * sync run that wrote or deleted a config path, before the "reload to
@@ -96,6 +104,13 @@ export interface EngineOptions {
    * swallowed by the engine so a hot-apply failure never breaks sync.
    */
   onConfigPulled?: () => void | Promise<void>;
+}
+
+export interface BlockedAction {
+  kind: 'pushDelete' | 'deleteLocal' | 'pull';
+  /** Local vault path (translated via scope.toLocalPath — display domain). */
+  localPath: string;
+  reason: 'batch' | 'burst';
 }
 
 export class SyncEngine {
@@ -113,10 +128,29 @@ export class SyncEngine {
   private rootMissingNotified = false;
   // Canonical-path collisions already notified this "streak" (cleared when none remain).
   private notifiedCollisionKeys = new Set<string>();
-  // Safety-brake notice: once per triggered streak, not per pass.
-  private safetyBrakeNotified = false;
+  // Actions withheld by the safety brake and/or delete-burst gate, as of the
+  // last computed plan — overwritten each planOnce(), not accumulated.
+  private blocked: BlockedAction[] = [];
+  // Blocked-state notice: once per triggered streak, not per pass.
+  private blockedNotified = false;
+  // One-shot, run-scoped: bypasses both gates for the next requestSync() run
+  // (reset in its finally), not just the next pass within it.
+  private forceRun = false;
+  private deleteBurst: DeleteBurstTracker;
 
-  constructor(private opts: EngineOptions) {}
+  constructor(private opts: EngineOptions) {
+    this.deleteBurst = opts.deleteBurst ?? new DeleteBurstTracker();
+  }
+
+  /** Actions withheld from the last computed plan, for the review modal. */
+  get blockedActions(): readonly BlockedAction[] {
+    return this.blocked;
+  }
+
+  /** Bypasses the safety brake and delete-burst gate for the next sync run. */
+  forceNextSync(): void {
+    this.forceRun = true;
+  }
 
   /**
    * Debounce-friendly entry point: coalesces overlapping requests.
@@ -148,6 +182,7 @@ export class SyncEngine {
       return total;
     } finally {
       this.running = false;
+      this.forceRun = false;
       this.opts.status(null);
     }
   }
@@ -161,7 +196,7 @@ export class SyncEngine {
       status('vault-sync: checking…');
       const actions = this.orderBySize(await this.planOnce());
       if (actions.length === 0) {
-        if (pass === 0) log('sync: up to date');
+        if (pass === 0 && this.blocked.length === 0) log('sync: up to date');
         return executed;
       }
       log(`sync: pass ${pass + 1}, ${actions.length} action(s)`);
@@ -296,20 +331,60 @@ export class SyncEngine {
     });
 
     const localPaths = new Set(local.map((f) => f.path));
-    const brake = applySafetyBrake(actions, localPaths, index.length);
-    if (brake.triggered) {
-      if (!this.safetyBrakeNotified) {
-        this.safetyBrakeNotified = true;
+    let finalActions = actions;
+    const blocked: { action: Action; reason: 'batch' | 'burst' }[] = [];
+
+    if (this.forceRun) {
+      this.forceRun = false;
+    } else {
+      const brake = applySafetyBrake(actions, localPaths, index.length);
+      finalActions = brake.actions;
+      for (const action of brake.blocked) blocked.push({ action, reason: 'batch' });
+
+      // Delete-burst gate: a trailing-window RATE check, independent of the
+      // batch brake's per-pass ratio — catches a trickle spread across many
+      // small passes that each individually stay under threshold. Only
+      // deletes that actually execute get recorded (see delete-burst.ts) —
+      // this gate must never record what it withholds, or a blocked batch
+      // (re-proposed identically every pass since the index never advances
+      // for it) would re-trip itself forever.
+      const now = Date.now();
+      const deletes = finalActions.filter(
+        (a) => a.kind === 'pushDelete' || a.kind === 'deleteLocal',
+      );
+      if (deletes.length > 0 && this.deleteBurst.isTripped(now)) {
+        const deleteSet = new Set<Action>(deletes);
+        finalActions = finalActions.filter((a) => !deleteSet.has(a));
+        for (const action of deletes) blocked.push({ action, reason: 'burst' });
+      }
+    }
+
+    this.blocked = blocked.map(({ action, reason }) => ({
+      kind: action.kind as BlockedAction['kind'],
+      localPath: this.opts.scope.toLocalPath(action.path),
+      reason,
+    }));
+
+    if (this.blocked.length > 0) {
+      if (!this.blockedNotified) {
+        this.blockedNotified = true;
+        const reasons = new Set(this.blocked.map((b) => b.reason));
+        const why =
+          reasons.has('batch') && reasons.has('burst')
+            ? 'mass changes and a delete burst'
+            : reasons.has('burst')
+              ? 'a delete burst'
+              : 'mass changes';
         this.opts.notify(
-          `vault-sync: refusing ${brake.blocked.length} mass change(s) this pass — ` +
-            'sync one connection at a time or check for a bad scan',
+          `vault-sync: withholding ${this.blocked.length} change(s) (${why}) — ` +
+            'review and force from the status bar if this is expected',
         );
       }
-      this.opts.log(`safety brake: blocked ${brake.blocked.length} action(s)`);
+      this.opts.log(`blocked ${this.blocked.length} action(s)`);
     } else {
-      this.safetyBrakeNotified = false;
+      this.blockedNotified = false;
     }
-    return brake.actions;
+    return finalActions;
   }
 
   // --- version history -----------------------------------------------------
@@ -542,7 +617,7 @@ export class SyncEngine {
   }
 
   private async pushDelete(path: string, parentIds: string[]): Promise<void> {
-    const { rest, keys, vaultId } = this.opts;
+    const { rest, keys, vaultId, scope } = this.opts;
     await rest.postRevision(vaultId, {
       id: crypto.randomUUID(),
       pathHmac: pathHmac(keys.macKey, path),
@@ -553,7 +628,8 @@ export class SyncEngine {
       deleted: true,
     } as Parameters<RestClient['postRevision']>[1]);
     this.opts.index.remove(path);
-    this.opts.log(`pushed delete of ${path}`);
+    this.deleteBurst.record(1, Date.now());
+    this.opts.log(`pushed delete of ${scope.toLocalPath(path)}`);
   }
 
   // --- pull side ---------------------------------------------------------
@@ -596,6 +672,7 @@ export class SyncEngine {
       this.applyingRemote = false;
     }
     this.opts.index.remove(path);
+    this.deleteBurst.record(1, Date.now());
     this.opts.log(
       `deleted ${this.opts.scope.toLocalPath(path)} (remote tombstone; ` +
         `${isConfigPath(path) ? 'prior version in server history' : 'local copy in .trash'})`,

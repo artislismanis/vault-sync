@@ -871,3 +871,70 @@ destructive path in this plugin) is what clears it from the next
 `findConflictGroups()` scan. No "acknowledged"/"dismissed" flag, no settings
 toggle. **Rules out**: a true in-editor banner; char-level highlighting in
 this pass; any persisted "conflict reviewed" state.
+
+**2026-08-24 — Mass-delete preview modal + delete-burst detector; supersedes
+this same day's safety-brake entry's "no force/preview UI" line.** That
+earlier entry's **Consequence accepted** said "no in-UI way to force
+[blocked actions] through, only to wait... or fix the root cause" — this
+entry closes that gap and adds the delete-burst detector the roadmap always
+called for alongside it, so neither is still open.
+
+`SyncEngine` now exposes `blockedActions` (a read-only getter, translated to
+local paths, tagged `reason: 'batch' | 'burst'`) and `forceNextSync()` (a
+one-shot, **run**-scoped bypass of both gates — reset in `requestSync()`'s
+`finally`, not per-pass, so a forced multi-pass run doesn't re-trip itself
+mid-operation and force the user to click twice). `SafetyBrakeModal` lists
+every connection's withheld changes at once with a two-step confirm per
+connection (matching `HistoryModal`'s restore and `EditVaultModal`'s delete —
+bypassing both safety gates at once earns the same ceremony as deleting a
+vault). The status bar gained a `blocked` tier above `conflict`
+(`paused > error > blocked > conflict > syncing > idle`, icon `shield-alert`)
+and both of `fullSync`'s and `syncNow`'s "up to date" messages were corrected
+to not claim nothing changed when something was in fact withheld.
+
+The delete-burst detector (`plugin/src/sync/delete-burst.ts`,
+`DeleteBurstTracker`) is a trailing-window **rate** gate — 10 minutes, 50
+deletes — orthogonal to the batch brake's per-pass **ratio** check, added
+specifically because a slow trickle of deletes spread across many small
+reconciliation passes (each individually under the batch brake's
+count>20/ratio>25% threshold) is exactly what the batch brake structurally
+cannot see. Two points worth recording because a first draft got them wrong
+before any code shipped:
+
+- **It only ever records deletes that actually executed** — `record()` is
+  called inside `pushDelete()`/`deleteLocal()` at their point of execution,
+  never at plan time. A first draft recorded a blocked batch's count into the
+  window *before* deciding whether to block it; since blocked actions are
+  re-proposed identically every subsequent pass (the index never advances
+  for them), that recorded count would never age out, and the same handful
+  of blocked deletes would re-trip the gate forever. There is no "peek before
+  deciding" — the gate checks whether the window is *already* over cap from
+  past executions, full stop.
+- **The cap (50) sits above the batch brake's own recorded threshold
+  (count>20) on purpose**, so this gate never fires before the batch brake
+  gets a chance to and doesn't silently override that entry's AND(20, 25%)
+  choice. 50 is a recoverability argument, not a data-loss one: `pushDelete`
+  leaves the prior revision in server history and `deleteLocal` routes
+  through `.trash` (hard rule 4), so it's fine to err loose and let a
+  legitimate bulk cleanup (a 30-note folder prune) pass without tripping.
+
+Scoped to `pushDelete` + `deleteLocal` only, not `pull`-over-existing-file —
+matching "delete-burst" literally; overwrites are already covered by the
+batch brake's broader destructive umbrella. One tracker instance is shared
+across every connection's engine (constructed once in `main.ts` alongside
+the existing shared `rest` client) rather than one per engine: connections
+sync strictly sequentially, so this is concurrency-safe, and the failure
+modes it guards against (an OS-level folder move, a runaway script) aren't
+bounded by mount points. Session-local, no persistence — a reload resets the
+window, which is acceptable because the batch brake is stateless and still
+covers the case that matters most right after a restart (a mass remote
+delete from another device, caught on the very first pass).
+
+**Rules out**: recording blocked/withheld actions into the burst window;
+per-pass (rather than per-run) scoping for `forceNextSync()`; a burst cap at
+or below the batch brake's count threshold; a per-engine (rather than
+shared) burst tracker. **Consequence accepted**: `pushDelete`'s log line now
+translates to the local path via `scope.toLocalPath()` like every other
+action's log line already did — this was a pre-existing inconsistency, fixed
+as part of building `blockedActions` uniformly rather than left as a
+separate cleanup.

@@ -22,9 +22,12 @@ import {
   ConflictModal,
   ConflictSuggestModal,
   HistoryModal,
+  SafetyBrakeModal,
 } from './ui/modals';
 import { hotApplyConfig, InternalApp } from './sync/hot-apply';
 import { ConflictGroup, findConflictGroups } from './sync/conflict-detect';
+import { BlockedAction } from './sync/engine';
+import { DeleteBurstTracker } from './sync/delete-burst';
 
 const SYNC_DEBOUNCE_MS = 2_000;
 const PERIODIC_RESCAN_MS = 5 * 60 * 1000;
@@ -67,6 +70,17 @@ export default class VaultSyncPlugin extends Plugin {
   // Conflict siblings currently in the vault; refreshed after each sync and
   // after resolving one via the review modal (see refreshConflicts()).
   private conflictGroups: ConflictGroup[] = [];
+  // Actions withheld by a connection's safety brake / delete-burst gate;
+  // refreshed after each sync and after a forced sync (see refreshBlocked()).
+  private blockedByConnection: {
+    connId: string;
+    label: string;
+    items: readonly BlockedAction[];
+  }[] = [];
+  // Shared across every connection's engine (see startSync()) — connections
+  // sync sequentially, and the failure modes this guards against aren't
+  // bounded by mount points.
+  private deleteBurst = new DeleteBurstTracker();
 
   async onload(): Promise<void> {
     // Crypto must be ready before ANY sync activity — single init point.
@@ -134,6 +148,15 @@ export default class VaultSyncPlugin extends Plugin {
       checkCallback: (checking) => {
         if (this.conflictGroups.length === 0) return false;
         if (!checking) this.openConflictPicker();
+        return true;
+      },
+    });
+    this.addCommand({
+      id: 'review-blocked',
+      name: 'Review blocked changes',
+      checkCallback: (checking) => {
+        if (this.blockedByConnection.length === 0) return false;
+        if (!checking) this.openBlockedReview();
         return true;
       },
     });
@@ -293,6 +316,7 @@ export default class VaultSyncPlugin extends Plugin {
               )
             : isCategoryExcluded(path, this.settings.syncCategories),
         spool: new ChunkSpool(adapter, `${this.manifest.dir}/spool/${opts.vaultId}`),
+        deleteBurst: this.deleteBurst,
         log: (message) => this.logActivity(isMain ? message : `[${opts.label}] ${message}`),
         notify: (message) => {
           new Notice(message);
@@ -353,6 +377,15 @@ export default class VaultSyncPlugin extends Plugin {
             .setIcon('refresh-cw')
             .onClick(() => this.syncNow(true)),
         );
+        if (this.blockedByConnection.length > 0) {
+          const count = this.blockedByConnection.reduce((n, c) => n + c.items.length, 0);
+          menu.addItem((item) =>
+            item
+              .setTitle(`Review blocked changes (${count})`)
+              .setIcon('shield-alert')
+              .onClick(() => this.openBlockedReview()),
+          );
+        }
         if (this.conflictGroups.length > 0) {
           menu.addItem((item) =>
             item
@@ -442,6 +475,8 @@ export default class VaultSyncPlugin extends Plugin {
         errors.push(`${conn.label}: ${(err as Error).message}`);
       }
     }
+    this.refreshConflicts();
+    this.refreshBlocked();
     if (errors.length > 0) {
       this.syncState = 'error';
       this.lastError = errors.join(' · ');
@@ -452,12 +487,16 @@ export default class VaultSyncPlugin extends Plugin {
       this.lastSyncAt = new Date();
       this.lastError = null;
       if (interactive) {
+        const blockedCount = this.blockedByConnection.reduce((n, c) => n + c.items.length, 0);
         new Notice(
-          changes === 0 ? 'vault-sync: up to date' : `vault-sync: ${changes} change(s) synced`,
+          changes > 0
+            ? `vault-sync: ${changes} change(s) synced`
+            : blockedCount > 0
+              ? `vault-sync: up to date — ${blockedCount} change(s) held back, review from the status bar`
+              : 'vault-sync: up to date',
         );
       }
     }
-    this.refreshConflicts();
   }
 
   async togglePause(): Promise<void> {
@@ -473,6 +512,44 @@ export default class VaultSyncPlugin extends Plugin {
   private refreshConflicts(): void {
     this.conflictGroups = findConflictGroups(this.app.vault.getFiles().map((f) => f.path));
     this.refreshStatusIcon();
+  }
+
+  /**
+   * Recomputes blocked actions from every connection's engine (not just ones
+   * synced this round — a debounced pass may have skipped a connection, but
+   * its engine still holds its last computed verdict) and refreshes the icon.
+   */
+  private refreshBlocked(): void {
+    this.blockedByConnection = this.connections
+      .map((c) => ({ connId: c.id, label: c.label, items: c.engine.blockedActions }))
+      .filter((c) => c.items.length > 0);
+    this.refreshStatusIcon();
+  }
+
+  private openBlockedReview(): void {
+    new SafetyBrakeModal(
+      this.app,
+      this.blockedByConnection,
+      (connId) => void this.forceSync(connId),
+    ).open();
+  }
+
+  private async forceSync(connId: string): Promise<void> {
+    const conn = this.connections.find((c) => c.id === connId);
+    if (!conn) return;
+    if (this.settings.paused) {
+      new Notice('vault-sync: resume sync before forcing this through');
+      return;
+    }
+    conn.engine.forceNextSync();
+    try {
+      await conn.engine.requestSync();
+      this.logActivity(`[${conn.label}] forced sync past the safety brake`);
+    } catch (err) {
+      new Notice(`vault-sync: forced sync failed — ${(err as Error).message}`);
+    }
+    this.refreshConflicts();
+    this.refreshBlocked();
   }
 
   private openConflictReview(group: ConflictGroup): void {
@@ -504,7 +581,7 @@ export default class VaultSyncPlugin extends Plugin {
     new ConflictModal(this.app, original, sibling, () => this.refreshConflicts()).open();
   }
 
-  /** Icon per state, overlaid with a conflict warning; details live in the tooltip. */
+  /** Icon per state, overlaid with blocked/conflict warnings; details live in the tooltip. */
   private refreshStatusIcon(): void {
     if (!this.statusBar) return;
     const state = this.settings.paused ? 'paused' : this.syncState;
@@ -514,20 +591,28 @@ export default class VaultSyncPlugin extends Plugin {
       error: 'alert-circle',
       paused: 'pause',
     } as const;
+    const blockedCount = this.blockedByConnection.reduce((n, c) => n + c.items.length, 0);
+    const hasBlocked = blockedCount > 0;
     const hasConflicts = this.conflictGroups.length > 0;
-    // Precedence: paused/error win the icon outright; a pending conflict
+    // Precedence: paused/error win the icon outright; blocked changes (sync
+    // actively withholding something) outrank a stale conflict, which
     // otherwise beats the idle/syncing icon (but not the spin — that's only
     // meaningful for the refresh icon itself).
     const icon =
       state === 'paused' || state === 'error'
         ? icons[state]
-        : hasConflicts
-          ? 'alert-triangle'
-          : icons[state];
+        : hasBlocked
+          ? 'shield-alert'
+          : hasConflicts
+            ? 'alert-triangle'
+            : icons[state];
     setIcon(this.statusBar, icon);
     this.statusBar.toggleClass('vault-sync-spin', icon === icons.syncing);
 
     const parts = [`Vault Sync: ${state}`];
+    if (hasBlocked) {
+      parts.push(`${blockedCount} change(s) held back — right-click to review`);
+    }
     if (hasConflicts) {
       parts.push(`${this.conflictGroups.length} conflict(s) need review — right-click to open`);
     }

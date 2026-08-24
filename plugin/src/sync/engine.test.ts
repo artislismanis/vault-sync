@@ -15,6 +15,8 @@ import { SyncEngine, contentIdentical } from './engine';
 import { IndexStore } from './index-store';
 import { ChunkSpool, SpoolFs } from './spool';
 import type { FileStat, SyncScope } from './scope';
+import type { Action } from './planner';
+import { DeleteBurstTracker } from './delete-burst';
 
 // Root-missing guard (hard rule 4): a mounted folder connection whose local
 // root vanished (deleted/renamed in the file explorer) must never let the
@@ -339,5 +341,180 @@ describe('content-state guard (D1)', () => {
     expect(dec(files.get(path)!.bytes)).toBe('edited during download');
     expect(files.size).toBe(1);
     expect(index.get(path)?.lastSyncedRevisionId).toBe('rev-old');
+  });
+});
+
+// Safety brake (batch) + delete-burst gate (rate). Tested at planOnce()
+// directly, not through requestSync()/execute() — a blocked pushDelete needs
+// only heads()+scan(), not a mutable fake server that tracks tombstones.
+describe('safety brake and delete-burst gate', () => {
+  let keys: VaultKeys;
+
+  beforeAll(async () => {
+    await initSodium();
+    keys = deriveVaultKeys(crypto.getRandomValues(new Uint8Array(32)));
+  });
+
+  /** N index entries whose matching remote heads are non-deleted and
+   *  unadvanced, with an empty local scan — planner emits N pushDeletes. */
+  async function indexWithPendingDeletes(
+    n: number,
+  ): Promise<{ index: IndexStore; rest: RestClient }> {
+    const index = new IndexStore(
+      { exists: async () => false, read: async () => '[]', write: async () => {} } as never,
+      'index.json',
+    );
+    await index.load();
+    const items: {
+      itemId: string;
+      pathHmac: string;
+      encryptedPathB64: string;
+      heads: Revision[];
+    }[] = [];
+    for (let i = 0; i < n; i++) {
+      const path = `f${i}.md`;
+      index.set({
+        path,
+        mtime: 1000,
+        size: 10,
+        lastSyncedRevisionId: `rev-${i}`,
+        excluded: false,
+        basePlaintext: null,
+        contentHash: null,
+      });
+      items.push({
+        itemId: `item-${i}`,
+        pathHmac: pathHmac(keys.macKey, path),
+        encryptedPathB64: encryptPath(keys, path),
+        heads: [
+          {
+            id: `rev-${i}`,
+            itemId: `item-${i}`,
+            parentIds: [],
+            sizeBytes: 10,
+            deviceId: 'device-1',
+            clientMtime: new Date().toISOString(),
+            serverReceivedAt: new Date().toISOString(),
+            deleted: false,
+          } as unknown as Revision,
+        ],
+      });
+    }
+    const rest = { heads: async () => ({ items }) } as unknown as RestClient;
+    return { index, rest };
+  }
+
+  function buildEngine(
+    rest: RestClient,
+    index: IndexStore,
+    opts: { deleteBurst?: DeleteBurstTracker; notify?: (m: string) => void } = {},
+  ) {
+    return new SyncEngine({
+      scope: stubScope(),
+      rest,
+      keys,
+      vaultId: 'v1',
+      deviceName: 'test',
+      index,
+      getMaxFileSizeBytes: () => 0,
+      getParallelTransfers: () => 1,
+      isCategoryExcluded: () => false,
+      spool: stubSpool(),
+      deleteBurst: opts.deleteBurst,
+      log: () => {},
+      notify: opts.notify ?? (() => {}),
+      status: () => {},
+    });
+  }
+
+  function asPlanOnce(engine: SyncEngine) {
+    return engine as unknown as { planOnce: () => Promise<Action[]> };
+  }
+
+  it('batch brake blocks a mass pushDelete plan and surfaces it', async () => {
+    const { index, rest } = await indexWithPendingDeletes(60);
+    const engine = buildEngine(rest, index);
+
+    const actions = await asPlanOnce(engine).planOnce();
+
+    expect(actions).toEqual([]);
+    expect(engine.blockedActions).toHaveLength(60);
+    expect(engine.blockedActions.every((b) => b.reason === 'batch')).toBe(true);
+    expect(engine.blockedActions.every((b) => b.kind === 'pushDelete')).toBe(true);
+    expect(engine.blockedActions.map((b) => b.localPath)).toContain('f0.md');
+  });
+
+  it('forceNextSync() bypasses the batch brake for exactly one planOnce() call', async () => {
+    const { index, rest } = await indexWithPendingDeletes(60);
+    const engine = buildEngine(rest, index);
+
+    engine.forceNextSync();
+    const actions = await asPlanOnce(engine).planOnce();
+
+    expect(actions).toHaveLength(60);
+    expect(engine.blockedActions).toEqual([]);
+  });
+
+  it('delete-burst gate withholds only deletes, not other actions, once tripped', async () => {
+    const { index, rest } = await indexWithPendingDeletes(3);
+    // Below the batch brake's threshold (3 of 3 index entries, but count <= 20),
+    // so this exercises the burst gate specifically, not the batch brake.
+    const deleteBurst = new DeleteBurstTracker({ windowMs: 60_000, maxDeletes: 1 });
+    deleteBurst.record(2, Date.now()); // pre-tripped
+    const engine = buildEngine(rest, index, { deleteBurst });
+
+    const actions = await asPlanOnce(engine).planOnce();
+
+    expect(actions).toEqual([]);
+    expect(engine.blockedActions).toHaveLength(3);
+    expect(engine.blockedActions.every((b) => b.reason === 'burst')).toBe(true);
+  });
+
+  it('does not compound across repeated blocked passes, and releases once the window ages out', async () => {
+    const { index, rest } = await indexWithPendingDeletes(3);
+    const deleteBurst = new DeleteBurstTracker({ windowMs: 60_000, maxDeletes: 1 });
+    deleteBurst.record(2, Date.now());
+    const engine = buildEngine(rest, index, { deleteBurst });
+
+    const first = await asPlanOnce(engine).planOnce();
+    const second = await asPlanOnce(engine).planOnce();
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(engine.blockedActions).toHaveLength(3); // unchanged, not accumulated
+
+    // Nothing was ever recorded for the blocked passes, so the window empties
+    // out on its own once the original trip ages past windowMs — this is the
+    // regression test for the deadlock a record-what-you-block design would
+    // have shipped.
+    expect(deleteBurst.isTripped(Date.now() + 60_001)).toBe(false);
+  });
+
+  it('notifies once per blocked streak, resets after a clean pass', async () => {
+    const notices: string[] = [];
+    const { index, rest: baseRest } = await indexWithPendingDeletes(60);
+    // Same engine throughout; toggles whether the remote still has the
+    // 60 pending items, so this exercises the SAME blockedNotified flag
+    // transitioning blocked -> clean -> blocked again, not three fresh flags.
+    let remoteHasItems = true;
+    const rest = {
+      heads: async () => (remoteHasItems ? baseRest.heads('v1') : { items: [] }),
+    } as unknown as RestClient;
+    const engine = buildEngine(rest, index, { notify: (m) => notices.push(m) });
+
+    await asPlanOnce(engine).planOnce();
+    await asPlanOnce(engine).planOnce();
+    expect(notices).toHaveLength(1);
+
+    // Clean pass: remote no longer has the pending items (e.g. resolved on
+    // another device). blockedActions must clear and the flag must reset —
+    // proven below by a fresh notice firing once the block reappears.
+    remoteHasItems = false;
+    await asPlanOnce(engine).planOnce();
+    expect(engine.blockedActions).toEqual([]);
+    expect(notices).toHaveLength(1);
+
+    remoteHasItems = true;
+    await asPlanOnce(engine).planOnce();
+    expect(notices).toHaveLength(2);
   });
 });
