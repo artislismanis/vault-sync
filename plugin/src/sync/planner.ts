@@ -152,3 +152,48 @@ export function planSync(input: PlanInput): Action[] {
   }
   return actions;
 }
+
+// Safety brake: refuses a mass-destructive pass rather than executing it —
+// most likely caused by a bad scan (docs/roadmap.md Tier 1), not real intent.
+// Two independent directions: pushDelete tombstones server items (checked
+// against the known index size), pull-over-an-existing-file and deleteLocal
+// destroy local content (checked against the current local file count).
+// Blocked actions are simply dropped: no index advancement, replanned next
+// pass. Threshold: docs/decisions.md.
+const SAFETY_BRAKE_MIN_COUNT = 20;
+const SAFETY_BRAKE_MIN_RATIO = 0.25;
+
+function tripsBrake(count: number, total: number): boolean {
+  return count > SAFETY_BRAKE_MIN_COUNT && total > 0 && count / total > SAFETY_BRAKE_MIN_RATIO;
+}
+
+export interface SafetyBrakeResult {
+  actions: Action[];
+  blocked: Action[];
+  triggered: boolean;
+}
+
+export function applySafetyBrake(
+  actions: Action[],
+  localPaths: ReadonlySet<string>,
+  indexCount: number,
+): SafetyBrakeResult {
+  const pushDeletes = actions.filter((a) => a.kind === 'pushDelete');
+  const localDestructive = actions.filter(
+    (a) => a.kind === 'deleteLocal' || (a.kind === 'pull' && localPaths.has(a.path)),
+  );
+
+  const remoteBrake = tripsBrake(pushDeletes.length, indexCount);
+  const localBrake = tripsBrake(localDestructive.length, localPaths.size);
+  if (!remoteBrake && !localBrake) return { actions, blocked: [], triggered: false };
+
+  const blocked = new Set<Action>([
+    ...(remoteBrake ? pushDeletes : []),
+    ...(localBrake ? localDestructive : []),
+  ]);
+  return {
+    actions: actions.filter((a) => !blocked.has(a)),
+    blocked: [...blocked],
+    triggered: true,
+  };
+}

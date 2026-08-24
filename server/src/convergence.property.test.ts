@@ -180,6 +180,7 @@ class SimClient {
       lastSyncedRevisionId: revisionId,
       excluded: false,
       basePlaintext: content,
+      contentHash: null,
     });
   }
 

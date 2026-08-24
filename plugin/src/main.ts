@@ -15,8 +15,16 @@ import {
   isConfigExcluded,
   isConfigPath,
 } from './sync/config-categories';
-import { ActivityEntry, ActivityModal, ConfigHistorySuggestModal, HistoryModal } from './ui/modals';
+import {
+  ActivityEntry,
+  ActivityModal,
+  ConfigHistorySuggestModal,
+  ConflictModal,
+  ConflictSuggestModal,
+  HistoryModal,
+} from './ui/modals';
 import { hotApplyConfig, InternalApp } from './sync/hot-apply';
+import { ConflictGroup, findConflictGroups } from './sync/conflict-detect';
 
 const SYNC_DEBOUNCE_MS = 2_000;
 const PERIODIC_RESCAN_MS = 5 * 60 * 1000;
@@ -56,6 +64,9 @@ export default class VaultSyncPlugin extends Plugin {
   private lastSyncAt: Date | null = null;
   private lastError: string | null = null;
   private currentDetail: string | null = null;
+  // Conflict siblings currently in the vault; refreshed after each sync and
+  // after resolving one via the review modal (see refreshConflicts()).
+  private conflictGroups: ConflictGroup[] = [];
 
   async onload(): Promise<void> {
     // Crypto must be ready before ANY sync activity — single init point.
@@ -106,9 +117,38 @@ export default class VaultSyncPlugin extends Plugin {
         return true;
       },
     });
+    this.addCommand({
+      id: 'review-conflict',
+      name: 'Review conflict for current file',
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const group = file && this.conflictGroups.find((g) => g.original === file.path);
+        if (!group) return false;
+        if (!checking) this.openConflictReview(group);
+        return true;
+      },
+    });
+    this.addCommand({
+      id: 'review-conflicts',
+      name: 'Review all conflicts',
+      checkCallback: (checking) => {
+        if (this.conflictGroups.length === 0) return false;
+        if (!checking) this.openConflictPicker();
+        return true;
+      },
+    });
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu, file) => {
         if (file instanceof TFile && this.connections.length > 0) {
+          const group = this.conflictGroups.find((g) => g.original === file.path);
+          if (group) {
+            menu.addItem((item) =>
+              item
+                .setTitle('Vault Sync: review conflict')
+                .setIcon('alert-triangle')
+                .onClick(() => this.openConflictReview(group)),
+            );
+          }
           menu.addItem((item) =>
             item
               .setTitle('Vault Sync: version history')
@@ -116,6 +156,20 @@ export default class VaultSyncPlugin extends Plugin {
               .onClick(() => void this.showHistory(file.path)),
           );
         }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (!file || this.connections.length === 0) return;
+        // Live per-folder scan (siblings always share the original's
+        // folder) rather than the cached this.conflictGroups, so this is
+        // accurate even between syncs.
+        const folderPaths = (file.parent?.children ?? [])
+          .filter((f): f is TFile => f instanceof TFile)
+          .map((f) => f.path);
+        const group = findConflictGroups(folderPaths).find((g) => g.original === file.path);
+        if (group) new Notice(`vault-sync: "${file.name}" has an unreviewed conflict`);
       }),
     );
 
@@ -299,6 +353,14 @@ export default class VaultSyncPlugin extends Plugin {
             .setIcon('refresh-cw')
             .onClick(() => this.syncNow(true)),
         );
+        if (this.conflictGroups.length > 0) {
+          menu.addItem((item) =>
+            item
+              .setTitle(`Review conflicts (${this.conflictGroups.length})`)
+              .setIcon('alert-triangle')
+              .onClick(() => this.openConflictPicker()),
+          );
+        }
         menu.addItem((item) =>
           item
             .setTitle(this.settings.paused ? 'Resume sync' : 'Pause sync')
@@ -395,7 +457,7 @@ export default class VaultSyncPlugin extends Plugin {
         );
       }
     }
-    this.refreshStatusIcon();
+    this.refreshConflicts();
   }
 
   async togglePause(): Promise<void> {
@@ -407,7 +469,42 @@ export default class VaultSyncPlugin extends Plugin {
     if (!this.settings.paused) void this.syncNow(false);
   }
 
-  /** Icon per state; details live in the tooltip. */
+  /** Recomputes conflict siblings in the vault and refreshes the status icon. */
+  private refreshConflicts(): void {
+    this.conflictGroups = findConflictGroups(this.app.vault.getFiles().map((f) => f.path));
+    this.refreshStatusIcon();
+  }
+
+  private openConflictReview(group: ConflictGroup): void {
+    if (group.siblings.length === 1) {
+      this.showConflict(group.original, group.siblings[0]!);
+    } else {
+      new ConflictSuggestModal(this.app, group.siblings, (sibling) =>
+        this.showConflict(group.original, sibling),
+      ).open();
+    }
+  }
+
+  private openConflictPicker(): void {
+    if (this.conflictGroups.length === 1) {
+      this.openConflictReview(this.conflictGroups[0]!);
+      return;
+    }
+    new ConflictSuggestModal(
+      this.app,
+      this.conflictGroups.map((g) => g.original),
+      (original) => {
+        const group = this.conflictGroups.find((g) => g.original === original);
+        if (group) this.openConflictReview(group);
+      },
+    ).open();
+  }
+
+  private showConflict(original: string, sibling: string): void {
+    new ConflictModal(this.app, original, sibling, () => this.refreshConflicts()).open();
+  }
+
+  /** Icon per state, overlaid with a conflict warning; details live in the tooltip. */
   private refreshStatusIcon(): void {
     if (!this.statusBar) return;
     const state = this.settings.paused ? 'paused' : this.syncState;
@@ -417,10 +514,23 @@ export default class VaultSyncPlugin extends Plugin {
       error: 'alert-circle',
       paused: 'pause',
     } as const;
-    setIcon(this.statusBar, icons[state]);
-    this.statusBar.toggleClass('vault-sync-spin', state === 'syncing');
+    const hasConflicts = this.conflictGroups.length > 0;
+    // Precedence: paused/error win the icon outright; a pending conflict
+    // otherwise beats the idle/syncing icon (but not the spin — that's only
+    // meaningful for the refresh icon itself).
+    const icon =
+      state === 'paused' || state === 'error'
+        ? icons[state]
+        : hasConflicts
+          ? 'alert-triangle'
+          : icons[state];
+    setIcon(this.statusBar, icon);
+    this.statusBar.toggleClass('vault-sync-spin', icon === icons.syncing);
 
     const parts = [`Vault Sync: ${state}`];
+    if (hasConflicts) {
+      parts.push(`${this.conflictGroups.length} conflict(s) need review — right-click to open`);
+    }
     if (state === 'syncing' && this.currentDetail) parts.push(this.currentDetail);
     if (state === 'error' && this.lastError) parts.push(this.lastError);
     if (this.lastSyncAt) parts.push(`last sync ${this.lastSyncAt.toLocaleTimeString()}`);

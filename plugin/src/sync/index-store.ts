@@ -6,6 +6,10 @@ import type { DataAdapter } from 'obsidian';
 // basePlaintext is the merge base: cached for merge-eligible text files under
 // the size cap; null otherwise (binaries never text-merge; oversized bases
 // are re-fetched from server history on demand).
+//
+// contentHash is a hash-on-write fingerprint (content-hash.ts), set only
+// when updateIndexAfterSync already holds the buffer — never by re-reading
+// files during scan. null for excluded entries and pre-migration entries.
 
 export interface IndexEntry {
   path: string;
@@ -16,6 +20,7 @@ export interface IndexEntry {
   lastSyncedRevisionId: string | null;
   excluded: boolean;
   basePlaintext: string | null;
+  contentHash: string | null;
 }
 
 export const BASE_CACHE_MAX_BYTES = 1024 * 1024;
@@ -57,7 +62,9 @@ export class IndexStore {
     this.entries.clear();
     if (await this.adapter.exists(this.filePath)) {
       const raw = JSON.parse(await this.adapter.read(this.filePath)) as IndexEntry[];
-      for (const entry of raw) this.entries.set(entry.path, entry);
+      // Pre-migration index files have no contentHash key at all.
+      for (const entry of raw)
+        this.entries.set(entry.path, { ...entry, contentHash: entry.contentHash ?? null });
     }
   }
 

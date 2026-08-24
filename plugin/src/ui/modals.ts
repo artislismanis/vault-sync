@@ -271,6 +271,123 @@ export class ConfigHistorySuggestModal extends FuzzySuggestModal<string> {
   }
 }
 
+/**
+ * Diff a conflict sibling against the note it shadows. Unlike HistoryModal,
+ * both sides are already plain local files (conflictFile()/mergeHeads() both
+ * write through writeLocal() before any UI sees them) — no decrypt, no
+ * network, no engine-domain path translation.
+ */
+export class ConflictModal extends Modal {
+  constructor(
+    app: App,
+    private original: string,
+    private sibling: string,
+    /** Called after "Delete conflict copy" so the caller can refresh state. */
+    private onResolved: () => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass('vault-sync-history-modal');
+    void this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private async render(): Promise<void> {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: `Conflict — ${this.original}` });
+    contentEl.createEl('p', {
+      cls: 'setting-item-description',
+      text: `"${this.original}" was kept; "${this.sibling}" is the local copy from before the conflict.`,
+    });
+
+    const originalFile = this.app.vault.getFileByPath(this.original);
+    const siblingFile = this.app.vault.getFileByPath(this.sibling);
+    if (!originalFile || !siblingFile) {
+      contentEl.createEl('p', { text: 'One of these files no longer exists.' });
+    } else if (
+      !isMergeableText(this.original) ||
+      originalFile.stat.size > PREVIEW_MAX_BYTES ||
+      siblingFile.stat.size > PREVIEW_MAX_BYTES
+    ) {
+      contentEl.createEl('p', {
+        text: isMergeableText(this.original)
+          ? 'File is too large to preview here.'
+          : 'Preview is only available for text notes.',
+        cls: 'setting-item-description',
+      });
+    } else {
+      const pane = contentEl.createDiv({ cls: 'vault-sync-history-pane' });
+      pane.setText('Loading…');
+      const [siblingText, originalText] = await Promise.all([
+        this.app.vault.read(siblingFile),
+        this.app.vault.read(originalFile),
+      ]);
+      pane.empty();
+      if (!isDiffable(siblingText, originalText)) {
+        pane.setText('Too many lines to diff.');
+      } else {
+        const diff = lineDiff(siblingText, originalText);
+        if (!hasChanges(diff)) {
+          pane.setText('Identical — safe to delete the conflict copy.');
+        } else {
+          for (const line of diff) {
+            pane.createEl('div', { text: line.text || ' ', cls: `vault-sync-diff-${line.kind}` });
+          }
+        }
+      }
+    }
+
+    new Setting(contentEl)
+      .addButton((button) =>
+        button
+          .setButtonText('Delete conflict copy')
+          .setWarning()
+          .onClick(async () => {
+            if (!siblingFile) return;
+            await this.app.vault.trash(siblingFile, false);
+            new Notice(`vault-sync: "${this.sibling}" moved to .trash`);
+            this.onResolved();
+            this.close();
+          }),
+      )
+      .addButton((button) => button.setButtonText('Close').onClick(() => this.close()));
+  }
+}
+
+/**
+ * Picker for a conflict group with more than one sibling, or the vault-wide
+ * list of conflicted notes ("Review all conflicts"). Same FuzzySuggestModal
+ * pattern as ConfigHistorySuggestModal.
+ */
+export class ConflictSuggestModal extends FuzzySuggestModal<string> {
+  constructor(
+    app: App,
+    private items: string[],
+    private onChoose: (path: string) => void,
+  ) {
+    super(app);
+    this.setPlaceholder('Pick a conflicted file…');
+  }
+
+  getItems(): string[] {
+    return this.items;
+  }
+
+  getItemText(item: string): string {
+    return item;
+  }
+
+  onChooseItem(item: string): void {
+    this.onChoose(item);
+  }
+}
+
 export interface ActivityEntry {
   time: string;
   message: string;
