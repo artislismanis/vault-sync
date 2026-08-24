@@ -781,3 +781,93 @@ against a 12.11.1 runtime; better-sqlite3 ships no types of its own
 is load-bearing rather than incidental. Moved to `^9.6.0`, the current release,
 which typechecks clean. **Rules out**: `:latest` in any compose file we ship;
 dropping `@types/better-sqlite3` in favour of bundled types that do not exist.
+
+**2026-08-24 — `IndexEntry.contentHash`, hash-on-write; content-state guard on
+`pull`/`merge`/`deleteLocal`.** Sourced from reviewing kavinsood/yaos
+(docs/roadmap.md survey #9): `pull()` and `merge()` could overwrite a local
+edit that landed while `readBlob()` awaited a chunked download, and
+`updateIndexAfterSync` would then record the overwrite as synced — the edit
+was gone, never pushed, contradicting hard rule 4. Fixed by re-verifying local
+content immediately before every write that follows that await, using a fresh
+SHA-256 hash of current disk bytes rather than the mtime/size the plan was
+made from; on mismatch the action is dropped without advancing the index, so
+the next pass re-plans it as a merge (mirrors the existing `mergeHeads`
+pattern). `IndexEntry.contentHash` is a separate, persisted hash-on-write
+field (set in `updateIndexAfterSync`, where the buffer is already in memory)
+kept for future use by the planner's change detection; it is deliberately
+**not** consulted by `planner.ts` yet, which still falls back to mtime+size —
+consulting it would require hashing every file on every scan, which is
+mobile-hostile (hard rule 2) and out of scope here. Migration: index files
+written before this field existed have no `contentHash` key at all;
+`IndexStore.load()` normalizes that to `null` rather than treating a missing
+hash as "changed", which would otherwise re-push the entire vault on first
+sync after upgrade. **Rules out**: hashing files during `scope.scan()`
+("hash-on-scan"); treating a missing `contentHash` as proof of divergence
+anywhere in the planner (only the write guard treats "unverifiable" as
+"refuse", never the change-detection path). **Consequence accepted**: closing
+the residual gap for tools that deliberately preserve mtime (`cp -p`,
+`rsync --times`, restore-from-backup) needs a full content rescan; deferred to
+an on-demand "verify vault against server" command, not built yet.
+
+**2026-08-24 — Safety-brake threshold: AND(count > 20, ratio > 25%), not the
+Tier 1 backlog's OR(≥50, ≥30%, min 5).** `docs/roadmap.md` Tier 1 had drafted
+an OR threshold with an explicit floor to protect small vaults. Reviewing
+yaos' independent implementation of the same guard
+(`src/runtime/reconcile/safetyBrakePolicy.ts`) showed a strict AND of both
+conditions gets the same small-vault protection without a separate floor
+constant: a tiny vault can hit a high *ratio* easily but will not clear
+`count > 20`, and a large vault's small *ratio* of a mass change won't clear
+`ratio > 25%` even past `count > 20`. Implemented as `applySafetyBrake()` in
+`planner.ts`, evaluated independently in two directions — `pushDelete` count
+against the known index size (guards D2: a short/empty scan pushing
+mass-tombstones to the server) and `pull`-over-an-existing-file plus
+`deleteLocal` count against the current local file count (guards the local
+disk from a mass remote overwrite, the yaos-original direction). A blocked
+action is dropped from the plan entirely — not converted to some other action
+— so the index never advances for it and the same action re-evaluates next
+pass. **Rules out**: the OR-with-floor form originally drafted in Tier 1.
+**Consequence accepted**: no preview-before-confirm modal yet (still Tier 1);
+today the brake silently withholds the blocked actions and logs/notifies once
+per triggered streak — a user has no in-UI way to force them through, only to
+wait for the underlying divergence to shrink or fix the root cause (e.g. a
+missing folder) and let the next pass through cleanly.
+
+**2026-08-24 — Conflict-review UX: `Notice` + status bar, not an in-editor
+banner; line-level diff only; "resolved" = sibling deleted, no new state.**
+`docs/roadmap.md`'s Tier 1 conflict-review item called for "a banner on
+note-open" and "char-level highlighting". Two scope calls made explicit
+before building, both confirmed with the owner rather than assumed:
+
+1. **Discovery is a `Notice` (on `file-open`, live per-folder scan) plus a
+   persistent status-bar warning state**, not a div injected into the note
+   view. This codebase has zero precedent for touching the editor surface —
+   no CodeMirror, no `registerMarkdownPostProcessor`, no custom `ItemView` —
+   its entire UI vocabulary is `Notice`/`Modal`/`Menu`/status-bar. A true
+   banner would be a first-of-its-kind surface with real risk across Live
+   Preview/Source/Reading mode and mobile, for a problem a `Notice` already
+   solves (it's the exact mechanism already used for mobile sync progress,
+   `main.ts`'s `setStatus`).
+2. **Diff is line-level only** (`ConflictModal` reuses `linediff.ts` and the
+   `.vault-sync-diff-*` CSS verbatim from `HistoryModal`). Char-level
+   highlighting needs a real shape change — `DiffLine` has no way to pair a
+   del-line with its corresponding add-line today — deferred as an isolated
+   fast-follow once the review pane is validated in real use, not built
+   speculatively alongside it.
+
+Detection (`plugin/src/sync/conflict-detect.ts`) pattern-matches the already-
+materialized `(conflict …)` filename shape rather than parsing date/device
+out of it — a device name is arbitrary user text that can itself contain
+parens, so the regex only strips the ` (conflict …)` suffix and doesn't try
+to validate what's inside it. Both sides of a conflict are already plain
+local files on disk by the time any UI sees them (`conflictFile()` and
+`mergeHeads()` both write through `writeLocal()` first), so unlike
+`HistoryModal` this needs no decrypt, no network, and no engine-domain path
+translation — `app.vault.read()` on two `TFile`s is enough.
+
+**"Resolved" needed no new state**: a conflict is, by construction, "the
+sibling file exists" — so deleting it (the modal's "Delete conflict copy"
+button, routed through `vault.trash()`, recoverable like every other
+destructive path in this plugin) is what clears it from the next
+`findConflictGroups()` scan. No "acknowledged"/"dismissed" flag, no settings
+toggle. **Rules out**: a true in-editor banner; char-level highlighting in
+this pass; any persisted "conflict reviewed" state.

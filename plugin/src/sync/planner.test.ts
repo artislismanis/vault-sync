@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { planSync, PlanInput, RemoteHead } from './planner';
+import { planSync, applySafetyBrake, Action, PlanInput, RemoteHead } from './planner';
 import type { IndexEntry } from './index-store';
 
 const entry = (overrides: Partial<IndexEntry> & { path: string }): IndexEntry => ({
@@ -8,6 +8,7 @@ const entry = (overrides: Partial<IndexEntry> & { path: string }): IndexEntry =>
   lastSyncedRevisionId: 'rev-a',
   excluded: false,
   basePlaintext: null,
+  contentHash: null,
   ...overrides,
 });
 
@@ -292,5 +293,55 @@ describe('planSync', () => {
         }),
       ).toEqual([{ kind: 'push', path: 'video.mp4', parentIds: [] }]);
     });
+  });
+});
+
+describe('applySafetyBrake', () => {
+  const pushDelete = (path: string): Action => ({ kind: 'pushDelete', path, parentIds: [] });
+  const deleteLocal = (path: string): Action => ({ kind: 'deleteLocal', path, tombstoneId: 't' });
+  const pull = (path: string): Action => ({ kind: 'pull', path, revisionId: 'r' });
+
+  it('passes through a small number of destructive actions untouched', () => {
+    const actions = [pushDelete('a.md'), pushDelete('b.md')];
+    const result = applySafetyBrake(actions, new Set(), 10);
+    expect(result).toEqual({ actions, blocked: [], triggered: false });
+  });
+
+  it('blocks pushDeletes that are both >20 in count and >25% of the index', () => {
+    const actions = Array.from({ length: 21 }, (_, i) => pushDelete(`f${i}.md`));
+    const result = applySafetyBrake(actions, new Set(), 50); // 21/50 = 42%
+    expect(result.triggered).toBe(true);
+    expect(result.blocked).toHaveLength(21);
+    expect(result.actions).toEqual([]);
+  });
+
+  it('does not block when the ratio is high but the count is small', () => {
+    const actions = Array.from({ length: 5 }, (_, i) => pushDelete(`f${i}.md`));
+    const result = applySafetyBrake(actions, new Set(), 6); // 83%, but count <= 20
+    expect(result.triggered).toBe(false);
+  });
+
+  it('does not block when the count is high but the ratio is low', () => {
+    const actions = Array.from({ length: 21 }, (_, i) => pushDelete(`f${i}.md`));
+    const result = applySafetyBrake(actions, new Set(), 1000); // 2%
+    expect(result.triggered).toBe(false);
+  });
+
+  it('evaluates local-destructive actions (deleteLocal, pull-over-existing) independently', () => {
+    const localPaths = new Set(Array.from({ length: 30 }, (_, i) => `f${i}.md`));
+    const actions = [
+      ...Array.from({ length: 22 }, (_, i) => deleteLocal(`f${i}.md`)),
+      pull('new-file-not-local.md'), // not an overwrite — not counted
+    ];
+    const result = applySafetyBrake(actions, localPaths, 5); // index count irrelevant here
+    expect(result.triggered).toBe(true);
+    expect(result.blocked).toHaveLength(22);
+    expect(result.actions).toEqual([pull('new-file-not-local.md')]);
+  });
+
+  it('a fresh pull of a file that does not exist locally is never destructive', () => {
+    const actions = Array.from({ length: 30 }, (_, i) => pull(`new${i}.md`));
+    const result = applySafetyBrake(actions, new Set(), 5);
+    expect(result.triggered).toBe(false);
   });
 });

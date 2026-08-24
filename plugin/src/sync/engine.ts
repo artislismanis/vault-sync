@@ -14,11 +14,13 @@ import {
 } from '@vault-sync/shared';
 import type { RestClient } from '../transport/rest';
 import { IndexStore, isMergeableText, BASE_CACHE_MAX_BYTES } from './index-store';
-import { planSync, Action, LocalFile, RemoteItem } from './planner';
+import { planSync, applySafetyBrake, Action, LocalFile, RemoteItem } from './planner';
 import { ChunkSpool } from './spool';
 import { FileStat, SyncScope } from './scope';
 import { isConfigPath, pickLwwHead } from './config-categories';
 import { threeWayMerge } from '../merge/diff3';
+import { contentHash } from './content-hash';
+import { findCanonicalPathCollisions } from './canonical-path';
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.byteLength !== b.byteLength) return false;
@@ -109,6 +111,10 @@ export class SyncEngine {
   private configPulled = false;
   // Mount-folder-missing guard: notify once per transition, not per pass.
   private rootMissingNotified = false;
+  // Canonical-path collisions already notified this "streak" (cleared when none remain).
+  private notifiedCollisionKeys = new Set<string>();
+  // Safety-brake notice: once per triggered streak, not per pass.
+  private safetyBrakeNotified = false;
 
   constructor(private opts: EngineOptions) {}
 
@@ -279,14 +285,31 @@ export class SyncEngine {
       for (const head of item.heads) headIds.add(head.id);
     }
     await this.opts.spool.retainOnly(headIds);
-    return planSync({
+    const index = this.opts.index.all();
+    const actions = planSync({
       local,
-      index: this.opts.index.all(),
+      index,
       remote,
       maxFileSizeBytes: this.opts.getMaxFileSizeBytes(),
       isCategoryExcluded: this.opts.isCategoryExcluded,
       isScopeExcluded: (path) => this.opts.scope.isPolicyExcluded(path),
     });
+
+    const localPaths = new Set(local.map((f) => f.path));
+    const brake = applySafetyBrake(actions, localPaths, index.length);
+    if (brake.triggered) {
+      if (!this.safetyBrakeNotified) {
+        this.safetyBrakeNotified = true;
+        this.opts.notify(
+          `vault-sync: refusing ${brake.blocked.length} mass change(s) this pass — ` +
+            'sync one connection at a time or check for a bad scan',
+        );
+      }
+      this.opts.log(`safety brake: blocked ${brake.blocked.length} action(s)`);
+    } else {
+      this.safetyBrakeNotified = false;
+    }
+    return brake.actions;
   }
 
   // --- version history -----------------------------------------------------
@@ -327,7 +350,20 @@ export class SyncEngine {
   }
 
   private async scanLocal(): Promise<LocalFile[]> {
-    const local = await this.opts.scope.scan();
+    const scanned = await this.opts.scope.scan();
+    const collisions = findCanonicalPathCollisions(scanned.map((f) => f.path));
+    const collidingPaths = new Set(collisions.flatMap((c) => c.paths));
+    for (const c of collisions) {
+      if (this.notifiedCollisionKeys.has(c.canonicalKey)) continue;
+      this.notifiedCollisionKeys.add(c.canonicalKey);
+      this.opts.notify(
+        `vault-sync: "${c.paths.join('", "')}" look identical after Unicode normalization — ` +
+          'not synced until renamed',
+      );
+    }
+    if (collisions.length === 0) this.notifiedCollisionKeys.clear();
+
+    const local = scanned.filter((f) => !collidingPaths.has(f.path));
     this.sizeByPath.clear();
     for (const file of local) this.sizeByPath.set(file.path, file.size);
     return local;
@@ -501,7 +537,7 @@ export class SyncEngine {
       parentIds,
       new Date(stat.mtime).toISOString(),
     );
-    this.updateIndexAfterSync(path, stat, plaintext, revisionId);
+    await this.updateIndexAfterSync(path, stat, plaintext, revisionId);
     this.opts.log(`pushed ${scope.toLocalPath(path)}`);
   }
 
@@ -523,13 +559,33 @@ export class SyncEngine {
   // --- pull side ---------------------------------------------------------
 
   private async pull(path: string, revisionId: string): Promise<void> {
+    // Guard against an edit landing during the (possibly slow) download.
+    const before = await this.localFingerprint(path);
     const plaintext = await this.readBlob(this.findHead(path, revisionId));
+    if (!(await this.localUnchangedSince(path, before))) {
+      this.opts.log(
+        `pull of ${this.opts.scope.toLocalPath(path)} deferred — local file changed during ` +
+          'download; resolved next pass',
+      );
+      return; // index untouched; next pass re-plans it
+    }
     const stat = await this.writeLocal(path, plaintext);
-    this.updateIndexAfterSync(path, stat, plaintext, revisionId);
+    await this.updateIndexAfterSync(path, stat, plaintext, revisionId);
     this.opts.log(`pulled ${this.opts.scope.toLocalPath(path)}`);
   }
 
   private async deleteLocal(path: string): Promise<void> {
+    // Local edit since baseline wins over a remote delete (hard rule 4):
+    // skip the trash and let edit-beats-delete (planner.ts) resurrect it.
+    const idx = this.opts.index.get(path);
+    const stat = await this.opts.scope.stat(path);
+    if (stat && (!idx || stat.mtime !== idx.mtime || stat.size !== idx.size)) {
+      this.opts.log(
+        `skipped remote-delete of ${this.opts.scope.toLocalPath(path)} — local file changed ` +
+          'since last sync',
+      );
+      return;
+    }
     this.applyingRemote = true;
     try {
       // Recoverable either way: vault files go to .trash; config files have
@@ -556,6 +612,7 @@ export class SyncEngine {
       lastSyncedRevisionId: null,
       excluded: true,
       basePlaintext: null,
+      contentHash: null,
     });
     if (reason === 'size') {
       const capMb = Math.round(this.opts.getMaxFileSizeBytes() / (1024 * 1024));
@@ -576,7 +633,18 @@ export class SyncEngine {
     const { scope, index } = this.opts;
     const localBytes = await scope.read(path);
     if (!localBytes) return;
+    const localBefore = await contentHash(localBytes);
     const remoteBytes = await this.readBlob(this.findHead(path, remoteRevisionId));
+
+    // Guard against an edit landing during the readBlob wait — every branch
+    // below is a write decision and must not trust a stale `localBytes`.
+    if (!(await this.localUnchangedSince(path, localBefore))) {
+      this.opts.log(
+        `merge of ${scope.toLocalPath(path)} deferred — local file changed during sync; ` +
+          'resolved next pass',
+      );
+      return;
+    }
 
     // Identical content (common after disconnect→reconnect, which drops the
     // sync index): adopt the remote revision as our synced state — no write,
@@ -586,7 +654,7 @@ export class SyncEngine {
     // basePlaintext, so the next real edit has a merge base again.
     if (contentIdentical(path, localBytes, remoteBytes)) {
       const stat = await scope.stat(path);
-      this.updateIndexAfterSync(path, stat, localBytes, remoteRevisionId);
+      await this.updateIndexAfterSync(path, stat, localBytes, remoteRevisionId);
       this.opts.log(`adopted ${scope.toLocalPath(path)} (identical)`);
       return;
     }
@@ -606,7 +674,7 @@ export class SyncEngine {
           [remoteRevisionId],
           new Date().toISOString(),
         );
-        this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
+        await this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
         this.opts.log(`merged ${scope.toLocalPath(path)}`);
         return;
       }
@@ -646,7 +714,7 @@ export class SyncEngine {
         [remoteRevisionId, localRevisionId],
         localMtime,
       );
-      this.updateIndexAfterSync(path, stat, localBytes, mergeId);
+      await this.updateIndexAfterSync(path, stat, localBytes, mergeId);
     } else {
       const remoteBytes = await this.readBlob(remoteHead);
       const mergeId = await this.uploadContent(
@@ -656,7 +724,7 @@ export class SyncEngine {
         remoteHead.clientMtime,
       );
       const newStat = await this.writeLocal(path, remoteBytes);
-      this.updateIndexAfterSync(path, newStat, remoteBytes, mergeId);
+      await this.updateIndexAfterSync(path, newStat, remoteBytes, mergeId);
     }
     this.opts.log(
       `settings conflict on ${path} — ${localWins ? "this device's newer" : 'newer remote'} version kept; other in history`,
@@ -678,7 +746,7 @@ export class SyncEngine {
       await this.writeLocal(conflictPath, localBytes);
     }
     const remoteStat = await this.writeLocal(path, remoteBytes);
-    this.updateIndexAfterSync(path, remoteStat, remoteBytes, remoteRevisionId);
+    await this.updateIndexAfterSync(path, remoteStat, remoteBytes, remoteRevisionId);
     this.opts.log(
       `conflict on ${this.opts.scope.toLocalPath(path)} — local copy preserved as sibling`,
     );
@@ -711,7 +779,7 @@ export class SyncEngine {
       const bytes = await this.readBlob(winner);
       const revisionId = await this.uploadContent(path, bytes, headIds, winner.clientMtime);
       const stat = await this.writeLocalIfUnchanged(path, bytes);
-      if (stat) this.updateIndexAfterSync(path, stat, bytes, revisionId);
+      if (stat) await this.updateIndexAfterSync(path, stat, bytes, revisionId);
       this.opts.log(
         `settings LWW on ${path} — ${headIds.length} concurrent versions collapsed; others in history`,
       );
@@ -753,13 +821,23 @@ export class SyncEngine {
     // Local file (and any local divergence) reconciles against the new single
     // head on the next pass.
     const stat = await this.writeLocalIfUnchanged(path, mergedBytes);
-    if (stat) this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
+    if (stat) await this.updateIndexAfterSync(path, stat, mergedBytes, revisionId);
     this.opts.log(
       `merged ${headIds.length} concurrent heads of ${this.opts.scope.toLocalPath(path)}`,
     );
   }
 
   // --- helpers -----------------------------------------------------------
+
+  /** Hash of the file currently on disk, or null if it doesn't exist. */
+  private async localFingerprint(path: string): Promise<string | null> {
+    const bytes = await this.opts.scope.read(path);
+    return bytes ? contentHash(bytes) : null;
+  }
+
+  private async localUnchangedSince(path: string, before: string | null): Promise<boolean> {
+    return (await this.localFingerprint(path)) === before;
+  }
 
   private async writeLocal(path: string, bytes: Uint8Array): Promise<FileStat> {
     this.applyingRemote = true;
@@ -781,12 +859,12 @@ export class SyncEngine {
     return this.writeLocal(path, bytes);
   }
 
-  private updateIndexAfterSync(
+  private async updateIndexAfterSync(
     path: string,
     stat: FileStat | null,
     plaintext: Uint8Array,
     revisionId: string,
-  ): void {
+  ): Promise<void> {
     // Config paths never cache a merge base: they resolve by LWW, not diff3.
     const cacheBase =
       isMergeableText(path) && !isConfigPath(path) && plaintext.byteLength <= BASE_CACHE_MAX_BYTES;
@@ -797,6 +875,7 @@ export class SyncEngine {
       lastSyncedRevisionId: revisionId,
       excluded: false,
       basePlaintext: cacheBase ? new TextDecoder().decode(plaintext) : null,
+      contentHash: await contentHash(plaintext),
     });
   }
 }

@@ -12,19 +12,28 @@ item back to where the idea came from. Don't let the two diverge: if an item
 here changes Phase 2/3 scope, update `mvp-spec.md` too. Adopting a Tier 2 item
 requires a decision entry in [decisions.md](decisions.md) first.
 
+A ninth project, kavinsood/yaos (a CRDT-based Obsidian sync engine on
+Cloudflare Workers, no E2EE), was reviewed on 2026-08-24. Most of its
+complexity is downstream of a monolithic CRDT doc, a live editor binding, and
+Cloudflare row budgets — none of which apply here — but the review also
+surfaced two real defects in our own engine, fixed the same day
+(`docs/decisions.md`). Items below sourced from it are marked "Source: yaos".
+Rejected ideas from that review are recorded at the bottom of this file so
+they aren't re-proposed from a future re-read.
+
 ## Settled — verified already implemented
 
 Before ranking, five "we might already do this" candidates were checked
 against the code. All five are already correct — they are not backlog items,
 just documented here so nobody re-investigates them:
 
-| Pattern                                                                                           | Where                                                                                     |
-| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `node-diff3` `excludeFalseConflicts: true` (identical concurrent edits don't spuriously conflict) | `plugin/src/merge/diff3.ts:11`                                                            |
-| Change detection compares size **and** mtime, not mtime alone                                     | `plugin/src/sync/planner.ts:105`, `plugin/src/sync/engine.ts:765`                         |
-| Self-write suppression (engine writes don't re-trigger as external edits)                         | `plugin/src/sync/engine.ts:92`                                                            |
-| Renderer yielding during large batch transfers (no Obsidian UI freeze)                            | `plugin/src/sync/engine.ts:64` (`yieldMain`), called at upload/download/spool loop points |
-| Poison isolation (one bad blob doesn't stall a batch; failures retry next sync)                   | `plugin/src/sync/engine.ts:186-216`                                                       |
+| Pattern                                                                                                                                                                                                                | Where                                                                                     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `node-diff3` `excludeFalseConflicts: true` (identical concurrent edits don't spuriously conflict)                                                                                                                      | `plugin/src/merge/diff3.ts:11`                                                            |
+| Change detection compares size **and** mtime — beats mtime-alone only, not a correctness primitive; still misses tools that preserve mtime (corrected 2026-08-24, `docs/decisions.md`)                                 | `plugin/src/sync/planner.ts:105`, `plugin/src/sync/engine.ts:765`                         |
+| Self-write suppression — real, but coarser than it reads: only guards event-driven scheduling, not a concurrent edit landing mid-await inside `pull`/`merge`/`deleteLocal` (D1, fixed 2026-08-24, `docs/decisions.md`) | `plugin/src/sync/engine.ts:101`                                                           |
+| Renderer yielding during large batch transfers (no Obsidian UI freeze)                                                                                                                                                 | `plugin/src/sync/engine.ts:64` (`yieldMain`), called at upload/download/spool loop points |
+| Poison isolation (one bad blob doesn't stall a batch; failures retry next sync)                                                                                                                                        | `plugin/src/sync/engine.ts:186-216`                                                       |
 
 ## Tier 1 — near-term, high-value, low-risk
 
@@ -35,24 +44,37 @@ No architecture decision needed; build directly.
   both the settings pane and the version-history modal. _Implemented
   2026-07-12_ — see `decisions.md`. Source: obsidian-agent-sandbox
   `renderTabs`/`sandbox-settings-tab` CSS.
-- **Conflict-review UX**: a banner on note-open when a `(conflict …)` sibling
-  exists for that note, a status-bar state change (ok/warning), and a
-  unified-diff review pane (line diff + char-level highlighting, collapsed
-  unchanged context). We already generate conflict siblings correctly
-  (`docs/explanation/sync-protocol.md`) and already have diff-highlight CSS
-  (`plugin/styles.css` `.vault-sync-diff-*`); the actual gap is _discovery_ —
-  today a conflict is a silently-created file the user has to notice in the
-  file tree. Source: obsidian-conflict-manager (`notifier.ts`, `indicator.ts`,
-  `unified-diff.ts`).
-- **Mass-delete safety guard + preview-before-confirm modal**: block or
-  require explicit confirmation when a sync would delete ≥50 items or ≥30% of
-  known entries (min 5), with a modal listing what's about to change before
-  the user confirms — not a bare "are you sure?". Seen independently in two
-  unrelated projects (Osync-p, ObsidianGoogleDriveSync), which is a stronger
-  signal than a single sighting, and it serves hard rule #4 (never lose data)
-  directly. Companion: a delete-burst detector (rate-based: N deletes within a
-  trailing window) to catch bursts _between_ reconciliation passes, which the
-  batch-level guard alone would miss.
+- **Conflict-review UX** — _implemented 2026-08-24_: discovery (a `Notice` on
+  opening a conflicted note, a status-bar warning state + right-click "Review
+  conflicts (N)") plus a review modal (`ConflictModal`) reusing `linediff.ts`
+  and the existing `.vault-sync-diff-*` CSS verbatim — both sides of a
+  conflict are already plain local files, so no decrypt/network is needed to
+  diff them. Detection is a new pure module (`sync/conflict-detect.ts`)
+  pattern-matching the `(conflict …)` filename shape; "resolved" is simply
+  "the sibling no longer exists" (a "Delete conflict copy" button, recoverable
+  via `.trash`) — no new persisted state. Two scope calls made explicit in
+  `docs/decisions.md`: a `Notice` + status bar instead of a true in-editor
+  banner (this codebase has no editor-injection precedent at all — no
+  CodeMirror, no `registerMarkdownPostProcessor` — and building one is
+  disproportionate risk for what a Notice already covers); and line-level
+  diff only — **char-level highlighting is still open**, deferred as an
+  isolated fast-follow since it needs a real shape change to `DiffLine` (no
+  pairing between a del-line and its add-line today). Source:
+  obsidian-conflict-manager (`notifier.ts`, `indicator.ts`, `unified-diff.ts`).
+- **Mass-delete safety guard + preview-before-confirm modal**: the underlying
+  guard is _implemented 2026-08-24_ — `applySafetyBrake()` in `planner.ts`,
+  threshold AND(count > 20, ratio > 25%) evaluated independently for
+  server-destructive (`pushDelete` vs. known index size) and local-destructive
+  (`pull`-over-existing-file + `deleteLocal` vs. current local file count)
+  actions; blocked actions are dropped without advancing the index, so the
+  next pass re-evaluates them (`docs/decisions.md`). Seen independently in
+  three projects now (Osync-p, ObsidianGoogleDriveSync, yaos — the third
+  sighting is what tipped this from "someday" to "build now", alongside a
+  verified defect it closes, D2). **Still open**: the preview-before-confirm
+  modal (currently just a notify + activity-log line, no UI to inspect or
+  force through a blocked pass) and the delete-burst detector (rate-based: N
+  deletes within a trailing window, to catch bursts _between_ reconciliation
+  passes, which the batch-level guard alone would miss).
 - **Blocked-file tracking by (size, mtime)** to stop retry-storming permanent
   errors (quota exceeded, oversized) every reconciliation cycle instead of
   silently retrying forever. Source: obsyncian.
@@ -62,6 +84,44 @@ No architecture decision needed; build directly.
   don't get misread as new external edits. Source: nas-sync-plugin. Likely a
   small fix if not already separated — verify against `plugin/src/sync/engine.ts`
   before building.
+- **Content-state guard on `pull`/`merge`/`deleteLocal`** — _implemented
+  2026-08-24_: a local edit landing while `readBlob()` awaited a chunked
+  download could be silently overwritten and recorded as synced (D1, a real
+  hard-rule-4 violation, not a hypothetical). Fixed by re-hashing current disk
+  content immediately before each write; on mismatch the action is dropped
+  without advancing the index (`docs/decisions.md`). Source: yaos
+  (`docs/architecture/filesystem-bridge.md`'s "bind suppression to observed
+  content, not elapsed time").
+- **Canonical-path collision detection** — _implemented 2026-08-24_:
+  `VaultScope.scan()` passed raw (non-normalized) paths, so an NFC- and an
+  NFD-spelled file could coexist locally while colliding on one server
+  `pathHmac` (D3 — the server cannot detect this itself under E2EE).
+  `canonical-path.ts` detects the collision and both paths are excluded from
+  that sync pass with a notice, rather than corrupting each other via
+  `mergeHeads`. Source: yaos (`src/paths/canonicalPath.ts`,
+  `findCanonicalPathCollisions`).
+- **Runtime version/capability negotiation**: `/healthz` returns a version,
+  but nothing lets an updated plugin detect and gracefully degrade against an
+  older server — users update BRAT and Docker independently, so version skew
+  is a real, reachable state, not hypothetical. Needs a wire protocol version
+  constant first (`shared/src/protocol/` has none today). Source: yaos
+  (`GET /api/capabilities` — their plugin disables attachment/snapshot UI
+  when the server lacks an R2 binding; degrade a feature, don't fail a sync).
+- **Surface the durability receipt as a "safe to close" state**: `POST
+/revisions` returning `201` already means the revision is durably in object
+  storage (write-ahead: sidecar → index → ack) — we already have what yaos
+  spent 1,153 lines building (`docs/engineering/server-ack-design.md`) to
+  approximate for a CRDT's ackless WebSocket. What's missing is surfacing it
+  in the plugin UI, which matters most on mobile where iOS can kill the app
+  mid-sync. UI/status semantics only, no protocol work.
+- **Two doc genres**, both fitting the existing Diátaxis + `decisions.md`
+  culture at near-zero cost: a `warts-and-limits.md` page of accepted
+  compromises and their reasons (distinct from `decisions.md`, which records
+  choices, not known sharp edges); and a `sync-vocabulary.md` naming
+  canonical subsystems/states/reason codes, with the rule that user-facing
+  copy maps back to exactly one of each. Cheap now, harder to retrofit once
+  ad hoc naming has spread through the code. Source: yaos
+  (`docs/architecture/warts-and-limits.md`, `docs/engineering/sync-vocabulary.md`).
 
 ## Tier 2 — needs a decision first (write an ADR, then build)
 
@@ -127,6 +187,15 @@ add provenance and priority signal to that list rather than replacing it.
   list/resolve, trash recovery, device list, Prometheus metrics). We're
   CLI-only by design for single-user MVP (`mvp-spec.md`); revisit only if that
   stops being sufficient.
+- **Redacted diagnostics export.** Under E2EE our paths are secret, so a debug
+  bundle containing filenames is a confidentiality bug, not a hygiene issue —
+  and today the activity log is in-memory only (200 entries, session
+  lifetime), so there is nothing to send when something goes wrong on a
+  phone. Source: yaos (`src/telemetry/diagnostics/pathRedactor.ts`): a
+  per-bundle salted hash, stable within one bundle so events still correlate,
+  fresh across bundles so collecting several can't enumerate paths by
+  intersection; salt never ships. Pair with a filenames-included variant
+  behind explicit confirmation, as they do.
 
 ## Non-technical threads
 
@@ -144,6 +213,33 @@ add provenance and priority signal to that list rather than replacing it.
   (`mvp-spec.md`'s explicit non-goals section, stated up front rather than
   buried); worth deliberately preserving as the project grows, not a gap.
 
+## Reviewed and rejected (yaos, 2026-08-24)
+
+Recorded so a future re-read of yaos doesn't re-propose these:
+
+- **`externalEditPolicy` (`never` / `closed-only` import of external edits)**
+  — exists in yaos because their live editor binding makes external edits to
+  an open file genuinely dangerous. A "never import external edits" toggle
+  would **contradict hard rule #3** (external edits are first-class). Not
+  portable.
+- **The frontmatter-integrity RFC** (529 lines) — their duplicate-YAML-key
+  corruption is a byte-level-CRDT pathology we structurally cannot have. Not
+  zero-risk for us (diff3 can produce duplicate keys when both sides insert
+  the same key at different offsets, since non-overlapping edits auto-merge),
+  but that's a small targeted test case, not a 529-line RFC.
+- **Block-level / delta chunking analysis** — we already ship chunked +
+  resumable transfers, and their refusal reasoning is Cloudflare-row-budget
+  arithmetic that doesn't transfer to an S3-compatible backend. Our own
+  delta-sync question (`mvp-spec.md` Phase 2) stands on its own merits,
+  unrelated to yaos' reasoning.
+- **Checkpoint+journal persistence, tombstone reaper, monolithic-doc memory
+  model** — artefacts of the CRDT architecture; nothing to port.
+- **CRDT/Yjs sync itself** — buys real-time co-editing, which we don't
+  target, at the cost of an architecture where E2EE isn't achievable as
+  they've built it (the server holds plaintext CRDT state). Hard rule #1
+  settles this the same way the Validation note below settles it against the
+  other eight surveyed projects.
+
 ## Validation note
 
 Six of the eight surveyed projects ship either no E2EE at all or a materially
@@ -151,4 +247,5 @@ weaker crypto construction (random-nonce AES-GCM with no AAD, PBKDF2 instead
 of Argon2id). That's read as evidence the E2EE-non-negotiable stance (hard
 rule #1) is the actual differentiator in this space, not over-engineering —
 worth holding the line on rather than trading it away for any Tier 2/3 item
-above.
+above. yaos (no E2EE at all, reviewed 2026-08-24) is the ninth data point in
+the same direction.
