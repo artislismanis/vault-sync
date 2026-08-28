@@ -1,7 +1,7 @@
 import { App, FuzzySuggestModal, Modal, Notice, Setting } from 'obsidian';
 import { rewrapVmk, unwrapVmk, VaultSummary, WrongPassphraseError } from '@vault-sync/shared';
 import type { Revision } from '@vault-sync/shared';
-import type { SyncEngine } from '../sync/engine';
+import type { BlockedAction, SyncEngine } from '../sync/engine';
 import { RestClient } from '../transport/rest';
 import { isMergeableText } from '../sync/index-store';
 import { hasChanges, isDiffable, lineDiff } from '../merge/linediff';
@@ -385,6 +385,92 @@ export class ConflictSuggestModal extends FuzzySuggestModal<string> {
 
   onChooseItem(item: string): void {
     this.onChoose(item);
+  }
+}
+
+const BLOCKED_ACTION_VERB: Record<BlockedAction['kind'], string> = {
+  pushDelete: 'Delete on the server (prior version stays in history)',
+  deleteLocal: 'Delete locally (moved to .trash)',
+  pull: 'Overwrite the local file from the server',
+};
+
+/**
+ * Lists everything the safety brake and/or delete-burst gate are currently
+ * withholding, across every connection at once (rare enough that the whole
+ * picture matters together, unlike conflicts). Force bypasses both gates for
+ * one sync — same two-step inline confirm as HistoryModal's restore and
+ * EditVaultModal's delete, since it deserves the same ceremony.
+ */
+export class SafetyBrakeModal extends Modal {
+  constructor(
+    app: App,
+    private connections: { connId: string; label: string; items: readonly BlockedAction[] }[],
+    private onForce: (connId: string) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass('vault-sync-history-modal');
+    this.render();
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private render(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl('h3', { text: 'Sync paused — changes withheld' });
+    contentEl.createEl('p', {
+      cls: 'setting-item-description',
+      text:
+        'These changes were withheld rather than executed, in case they came from a bad ' +
+        'scan rather than real intent. Nothing has been lost — review below, then force the ' +
+        'sync if this is expected.',
+    });
+
+    for (const conn of this.connections) {
+      contentEl.createEl('h4', { text: `${conn.label} (${conn.items.length})` });
+      const list = contentEl.createDiv({ cls: 'vault-sync-history-pane' });
+      for (const item of conn.items) {
+        const suffix = item.reason === 'burst' ? ' (delete burst)' : '';
+        list.createEl('div', {
+          text: `${BLOCKED_ACTION_VERB[item.kind]}: ${item.localPath}${suffix}`,
+        });
+      }
+      this.renderForce(contentEl, conn.connId, conn.label);
+    }
+  }
+
+  private renderForce(containerEl: HTMLElement, connId: string, label: string): void {
+    const force = new Setting(containerEl);
+    force.addButton((button) =>
+      button
+        .setButtonText(`Force sync "${label}"`)
+        .setWarning()
+        .onClick(() => {
+          force.clear();
+          force.setName(`Push all withheld changes for "${label}" through?`);
+          force.setDesc('Bypasses both safety checks for this one sync.');
+          force.addButton((confirm) =>
+            confirm
+              .setButtonText('Force sync')
+              .setWarning()
+              .onClick(() => {
+                this.onForce(connId);
+                this.close();
+              }),
+          );
+          force.addButton((cancel) =>
+            cancel.setButtonText('Cancel').onClick(() => {
+              force.settingEl.remove();
+              this.renderForce(containerEl, connId, label);
+            }),
+          );
+        }),
+    );
   }
 }
 

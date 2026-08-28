@@ -61,20 +61,25 @@ No architecture decision needed; build directly.
   isolated fast-follow since it needs a real shape change to `DiffLine` (no
   pairing between a del-line and its add-line today). Source:
   obsidian-conflict-manager (`notifier.ts`, `indicator.ts`, `unified-diff.ts`).
-- **Mass-delete safety guard + preview-before-confirm modal**: the underlying
-  guard is _implemented 2026-08-24_ — `applySafetyBrake()` in `planner.ts`,
-  threshold AND(count > 20, ratio > 25%) evaluated independently for
-  server-destructive (`pushDelete` vs. known index size) and local-destructive
+- **Mass-delete safety guard + preview-before-confirm modal** — _fully
+  implemented 2026-08-24_: `applySafetyBrake()` in `planner.ts`, threshold
+  AND(count > 20, ratio > 25%) evaluated independently for server-destructive
+  (`pushDelete` vs. known index size) and local-destructive
   (`pull`-over-existing-file + `deleteLocal` vs. current local file count)
-  actions; blocked actions are dropped without advancing the index, so the
-  next pass re-evaluates them (`docs/decisions.md`). Seen independently in
-  three projects now (Osync-p, ObsidianGoogleDriveSync, yaos — the third
-  sighting is what tipped this from "someday" to "build now", alongside a
-  verified defect it closes, D2). **Still open**: the preview-before-confirm
-  modal (currently just a notify + activity-log line, no UI to inspect or
-  force through a blocked pass) and the delete-burst detector (rate-based: N
-  deletes within a trailing window, to catch bursts _between_ reconciliation
-  passes, which the batch-level guard alone would miss).
+  actions. Blocked actions are surfaced via `SyncEngine.blockedActions` and a
+  `SafetyBrakeModal` (status-bar `shield-alert` state, "Review blocked
+  changes (N)" menu item and command) with a two-step "Force sync" per
+  connection that bypasses the guard for one run. Also added a
+  `DeleteBurstTracker` (`sync/delete-burst.ts`) — a trailing-window (10 min /
+  50 deletes) **rate** gate independent of the batch guard's per-pass
+  **ratio**, catching a trickle of deletes spread across many small passes
+  that each individually stay under threshold. Details and two design
+  corrections made before shipping (why the burst gate only counts
+  _executed_ deletes, and why its cap sits above the batch guard's own
+  threshold rather than shadowing it): `docs/decisions.md`. Seen
+  independently in three projects now (Osync-p, ObsidianGoogleDriveSync,
+  yaos — the third sighting is what tipped this from "someday" to "build
+  now", alongside a verified defect it closes, D2).
 - **Blocked-file tracking by (size, mtime)** to stop retry-storming permanent
   errors (quota exceeded, oversized) every reconciliation cycle instead of
   silently retrying forever. Source: obsyncian.
