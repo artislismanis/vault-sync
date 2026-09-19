@@ -938,3 +938,32 @@ translates to the local path via `scope.toLocalPath()` like every other
 action's log line already did — this was a pre-existing inconsistency, fixed
 as part of building `blockedActions` uniformly rather than left as a
 separate cleanup.
+
+**2026-09-19 — Dependabot moves to fortnightly and stops raising patch PRs;
+supersedes the weekly/grouped-patch decision of 2026-08-02.** The weekly
+Monday cadence produced a batch worth reviewing roughly one week in three;
+the rest were patch-only sweeps that were merged unread, which is worse than
+not raising them. Both halves of that are now addressed: cadence drops to
+fortnightly and `version-update:semver-patch` is ignored for every
+dependency across all three ecosystems.
+
+Dependabot has no `fortnightly` interval and cron cannot express "every
+other Monday" — day-of-week step values (`MON/2`) are accepted but silently
+run weekly. So the schedule is `interval: cron` with
+`cronjob: '0 6 1,15 * *'`: the 1st and 15th of each month, 24 runs a year
+against a true fortnight's 26, on whatever weekday those dates land.
+
+The patch suppression is written as an `update-types` ignore rather than a
+bare `dependency-name`, and the distinction is the whole point: `update-types`
+rules apply to *version* updates only, so Dependabot **security** updates
+still open patch-level PRs the moment an advisory lands. A bare
+`dependency-name` ignore would have silenced those too.
+
+**Rules out**: `interval: monthly` as the fortnightly stand-in (too slow to
+keep the minor backlog shallow); cron day-of-week stepping (doesn't work);
+dropping `patch` from the group `update-types:` lists (the ignore is the one
+authoritative statement of policy — if it is ever lifted, the groups still
+work unchanged). **Consequence accepted**: `semver-patch` classification is
+unreliable for dependencies that don't follow strict semver, so the
+occasional patch will still leak through — the `/deploy` MinIO images use
+date-based tags and are the likely offender here.

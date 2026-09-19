@@ -3,8 +3,12 @@
 # they open PRs as soon as an advisory lands.
 #
 # Policy (see docs/decisions.md, 2026-08-02):
-#   - weekly, Monday, so review is one batched chore rather than daily churn
-#   - minor+patch grouped into a single PR per ecosystem
+#   - fortnightly, so review is one batched chore rather than daily churn.
+#     Dependabot has no fortnightly interval, so the cron fires on the 1st and
+#     15th of each month; day-of-week steps (MON/2) silently run weekly.
+#   - patch bumps ignored outright. Expressed as an `update-types` ignore, which
+#     applies to version updates only, so security updates still open patch PRs.
+#   - minor bumps grouped into a single PR per ecosystem
 #   - MAJOR npm bumps deliberately fall through ungrouped, one PR each, so a
 #     breaking change is reviewed and CI-validated in isolation
 version: 2
@@ -16,8 +20,8 @@ updates:
   - package-ecosystem: npm
     directory: '/'
     schedule:
-      interval: weekly
-      day: monday
+      interval: cron
+      cronjob: '0 6 1,15 * *'
     # Raised from the default 5: a grouped minor/patch PR plus several
     # individual major PRs would otherwise silently hit the cap.
     open-pull-requests-limit: 10
@@ -31,6 +35,9 @@ updates:
           - minor
           - patch
     ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-patch
       # better-sqlite3 is the one dependency whose majors depend on an
       # external step we don't control: the maintainers publishing prebuilt
       # binaries. 13.0.2 shipped with none, so it cannot install in
@@ -48,14 +55,18 @@ updates:
   - package-ecosystem: github-actions
     directory: '/'
     schedule:
-      interval: weekly
-      day: monday
+      interval: cron
+      cronjob: '0 6 1,15 * *'
     open-pull-requests-limit: 5
     commit-message:
       prefix: ci
     groups:
       github-actions:
         patterns: ['*']
+    ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-patch
 
   # /server  — the node:24-bookworm-slim base image of the published
   #            ghcr.io server image. Both build and runtime stages share the
@@ -77,12 +88,15 @@ updates:
       - '/server'
       - '/deploy'
     schedule:
-      interval: weekly
-      day: monday
+      interval: cron
+      cronjob: '0 6 1,15 * *'
     open-pull-requests-limit: 5
     commit-message:
       prefix: docker
     ignore:
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-patch
       # Stay on the chosen Node LTS line. Odd-numbered Node majors are
       # non-LTS (~6 months of support); moving LTS→LTS is a deliberate call,
       # not a Monday-morning merge.
