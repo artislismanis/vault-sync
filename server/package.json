@@ -10,17 +10,17 @@
     "admin": "tsx --env-file-if-exists=../.env src/cli/admin.ts"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1126.0",
+    "@aws-sdk/client-s3": "^3.1130.0",
     "@fastify/rate-limit": "^11.2.0",
     "@fastify/websocket": "^11.3.0",
     "@vault-sync/shared": "^0.0.1",
     "better-sqlite3": "^12.11.1",
-    "fastify": "^5.12.3",
-    "zod": "^4.5.4"
+    "fastify": "^5.12.4",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.4.1",
+    "@types/node": "^26.5.1",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "pino-pretty": "^13.1.3",

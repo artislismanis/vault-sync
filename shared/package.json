@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "libsodium-wrappers-sumo": "^0.8.4",
-    "zod": "^4.5.4"
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "@types/libsodium-wrappers-sumo": "^0.8.2"
