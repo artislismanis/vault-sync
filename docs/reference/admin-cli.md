@@ -21,6 +21,15 @@ bucket is unreachable; commands that touch storage (`status`, `vault-delete`,
 `gc-blobs`, `prune`, `storage-usage`, `rebuild-index`) need valid `S3_*`
 configuration.
 
+**`--json`** — `status`, `vault-list`, `device-list` and `storage-usage`
+accept `--json` (before or after the command name) to print one JSON document
+to stdout instead of a table, for scripts and monitoring. List commands print
+an array (`[]` when empty) whose fields are the table's column names; `status`
+prints an object. If the command fails (invalid configuration, unreachable
+bucket) it exits non-zero, writes the error to stderr and leaves stdout empty.
+`--json` on any other command exits non-zero with a message on stderr and
+does not run the command. Output without `--json` is unchanged.
+
 ---
 
 ## status
@@ -37,6 +46,25 @@ auth:     password hash from env
 vaults:   2 (341 revision(s) total)
 devices:  3 (last seen 2026-07-12T09:14:02.113Z)
 storage:  128.4 MB in 512 blob object(s)
+```
+
+With `--json` the same data is an object (`bucket` is `reachable`; an
+unreachable bucket is an error, so `status --json` exits non-zero instead).
+`auth` is `file`, `env` or `none`; `last_seen` is `null` with no devices:
+
+```
+$ admin status --json
+{
+  "version": "0.0.10",
+  "bucket": "reachable",
+  "auth": "env",
+  "vaults": 2,
+  "revisions": 341,
+  "devices": 3,
+  "last_seen": "2026-07-12T09:14:02.113Z",
+  "blob_objects": 512,
+  "blob_megabytes": 128.4
+}
 ```
 
 ## set-password
@@ -97,6 +125,9 @@ $ admin vault-list
 │ 0       │ '3f2a91bc-7c1d-4e2a-9b0f-2d8f6a1c4e5b' │ 'Work Notes'│ '2026-07-11T18:03:11.402Z' │
 └─────────┴────────────────────────────────────────┴─────────────┴────────────────────────────┘
 ```
+
+`--json` prints an array of `{ id, name, created_at }` (`[]` when there are
+no vaults).
 
 ## vault-delete
 
@@ -180,6 +211,9 @@ $ admin storage-usage
 └─────────┴────────────────────────────────────────┴─────────┴───────────┘
 ```
 
+`--json` prints an array of `{ vault, objects, megabytes }` (`[]` when there
+are no blobs).
+
 ## device-list
 
 List registered devices (each successful plugin login registers one). The
@@ -194,6 +228,10 @@ $ admin device-list
 │ 1       │ '0b82fd13-…' │ 'phone'       │ '2026-07-11T19:22:05.310Z' │ '2026-07-12T07:48:33.590Z' │
 └─────────┴──────────────┴───────────────┴────────────────────────────┴────────────────────────────┘
 ```
+
+`--json` prints an array of `{ id, name, created_at, last_seen }`, most
+recently seen first (`[]` when there are no devices). Token hashes are never
+included.
 
 ## device-rename
 
