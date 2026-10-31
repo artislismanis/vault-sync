@@ -967,3 +967,62 @@ work unchanged). **Consequence accepted**: `semver-patch` classification is
 unreliable for dependencies that don't follow strict semver, so the
 occasional patch will still leak through — the `/deploy` MinIO images use
 date-based tags and are the likely offender here.
+
+**2026-10-31 — Character-level highlighting in conflict and version diffs:
+an additive layer over `lineDiff`, grapheme tokens, 0.5 similarity
+threshold, 2,000-unit line limit and a 250k-cell work budget; supersedes the
+"line-level only" scope call of 2026-08-24.** The 2026-08-24 entry deferred
+this because `DiffLine` cannot pair a deleted line with its replacement.
+Rather than change that shape (and every `lineDiff` caller and test), the new
+pure module `merge/inlinediff.ts` post-processes `lineDiff` output:
+`addInlineMarks()` pairs the k-th `del` of each del-run with the k-th `add`
+that follows it, and attaches `marks` (UTF-16 `[start, end)` ranges) to the
+pair. `linediff.ts` and its tests are unchanged. Both `HistoryModal` and
+`ConflictModal` render through one helper (`ui/diff-view.ts`), which also
+retires their duplicated render loops; the existing `.vault-sync-diff-*`
+rules gain only a `.vault-sync-diff-mark` modifier (same theme colour
+variables, higher alpha, so it follows light and dark).
+
+- **Tokens are graphemes** (`Intl.Segmenter`), so ZWJ emoji, flags, skin
+  tones and base + combining mark are never split. Equality is on the **NFC
+  form** of each grapheme: `é` and `e` + U+0301 are the same character, so
+  text differing only in normalisation gets no inner highlight and shows as
+  a plain whole-line change. If `Intl.Segmenter` is missing (not expected on
+  any Obsidian ≥ 1.5), the diff stays whole-line — splitting by code point
+  would break exactly what grapheme tokens exist to protect.
+- **Similarity threshold: 0.5** (`MIN_INLINE_SIMILARITY`), Dice coefficient
+  `2 × shared graphemes / (old + new)` after the diff. A pair below it shows
+  as a whole-line change instead of confetti. 0.5 is the point where fewer
+  than half the characters survive, so highlights would outnumber the
+  unchanged text around them; a one-word edit in a paragraph scores ~0.95,
+  `cat`→`cut` 0.67. Inclusive at the boundary. Shared characters inside a
+  replaced word (the `r` of `brown`→`red`) stay unhighlighted — literal
+  "changed characters only" — rather than being coalesced into the run.
+- **Size limits.** The LCS is O(n·m) in the worst case, and `diffIndices`
+  cost follows the number of matching grapheme pairs, so repetitive text is
+  its slowest shape. Measured here: random 10-letter text 1,000×1,000 ≈ 28 ms,
+  2,000×2,000 ≈ 160 ms, 4,000×4,000 ≈ 1.4 s; but `'ab'×700` vs `'ba'×700`
+  (≈ 2M cells) ≈ 640 ms, and a 500×500 adversarial repeated-character pair
+  (`b` + 499×`a` vs 499×`a` + `b`) ≈ 57 ms. Mobile is several times slower.
+  So: a pair with either line over **2,000 UTF-16 units**
+  (`MAX_INLINE_LINE_LENGTH`) skips inner highlighting, checked on the raw
+  string before any segmentation (a 100,000-character line costs a length
+  compare); and one `addInlineMarks` call spends at most **250,000 cells**
+  (`MAX_INLINE_CELLS`, old × new graphemes after trimming the common prefix
+  and suffix — about 60 ms on desktop even for the adversarial shape). A
+  pair that no longer fits falls back to whole-line, and once the budget is
+  spent the remaining pairs are not even segmented. Every pair whose diff
+  runs is charged, **including pairs then rejected as too dissimilar** —
+  they cost the same time, and a heavily rewritten file is mostly those. The
+  budget is what bounds thousands of mid-sized pairs inside
+  `DIFF_MAX_LINES`; the line limit alone would not. Because the budget
+  counts the trimmed middle, a small edit in a line of up to 2,000 units
+  still qualifies (the common one-word-in-a-paragraph case), but a pair
+  whose lines are mostly different is effectively limited to about 500
+  graphemes a side; a large rewrite of longer lines shows whole-line. The
+  first cut used 2M cells (≈ 80 ms on random text); review found it let
+  repetitive text through at ~8× that, hence 250k.
+
+**Rules out**: changing `DiffLine`'s shape; word-level tokens (the ticket
+asks for characters); a code-point fallback without `Intl.Segmenter`; a
+Levenshtein-ratio threshold (needs the full DP we are budgeting against).

@@ -94,6 +94,14 @@
   text-decoration: line-through;
 }
 
+.vault-sync-diff-add .vault-sync-diff-mark {
+  background: rgba(var(--color-green-rgb), 0.4);
+}
+
+.vault-sync-diff-del .vault-sync-diff-mark {
+  background: rgba(var(--color-red-rgb), 0.4);
+}
+
 .vault-sync-diff-gap {
   color: var(--text-faint);
   text-align: center;

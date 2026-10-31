@@ -5,6 +5,7 @@ import type { BlockedAction, SyncEngine } from '../sync/engine';
 import { RestClient } from '../transport/rest';
 import { isMergeableText } from '../sync/index-store';
 import { hasChanges, isDiffable, lineDiff } from '../merge/linediff';
+import { renderDiffLines } from './diff-view';
 import { deviceLabel, formatBytes, formatRelativeWhen, formatWhen } from './format';
 
 // Preview/diff decrypt whole revisions into webview memory; cap what the
@@ -191,12 +192,7 @@ export class HistoryModal extends Modal {
         );
         return;
       }
-      for (const line of diff) {
-        pane.createEl('div', {
-          text: line.text || ' ',
-          cls: `vault-sync-diff-${line.kind}`,
-        });
-      }
+      renderDiffLines(pane, diff);
     } catch (err) {
       if (token === this.loadToken) pane.setText(`Failed to load — ${(err as Error).message}`);
     }
@@ -336,9 +332,7 @@ export class ConflictModal extends Modal {
         if (!hasChanges(diff)) {
           pane.setText('Identical — safe to delete the conflict copy.');
         } else {
-          for (const line of diff) {
-            pane.createEl('div', { text: line.text || ' ', cls: `vault-sync-diff-${line.kind}` });
-          }
+          renderDiffLines(pane, diff);
         }
       }
     }

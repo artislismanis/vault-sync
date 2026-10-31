@@ -57,9 +57,9 @@ No architecture decision needed; build directly.
   banner (this codebase has no editor-injection precedent at all — no
   CodeMirror, no `registerMarkdownPostProcessor` — and building one is
   disproportionate risk for what a Notice already covers); and line-level
-  diff only — **char-level highlighting is still open**, deferred as an
-  isolated fast-follow since it needs a real shape change to `DiffLine` (no
-  pairing between a del-line and its add-line today). Source:
+  diff only at first; _char-level highlighting implemented 2026-10-31_ — see
+  `decisions.md` (an additive pairing layer over `lineDiff`, no `DiffLine`
+  shape change). Source:
   obsidian-conflict-manager (`notifier.ts`, `indicator.ts`, `unified-diff.ts`).
 - **Mass-delete safety guard + preview-before-confirm modal** — _fully
   implemented 2026-08-24_: `applySafetyBrake()` in `planner.ts`, threshold
