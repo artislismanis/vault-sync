@@ -21,6 +21,34 @@ bucket is unreachable; commands that touch storage (`status`, `vault-delete`,
 `gc-blobs`, `prune`, `storage-usage`, `rebuild-index`) need valid `S3_*`
 configuration.
 
+## JSON output
+
+The read-only commands `status`, `vault-list`, `device-list` and
+`storage-usage` accept `--json`, before or after the command name, for scripts
+and monitoring:
+
+```
+$ admin vault-list --json
+[
+  {
+    "id": "3f2a91bc-7c1d-4e2a-9b0f-2d8f6a1c4e5b",
+    "name": "Work Notes",
+    "created_at": "2026-07-11T18:03:11.402Z"
+  }
+]
+```
+
+- stdout carries exactly one JSON document and nothing else. `vault-list`,
+  `device-list` and `storage-usage` print an array (`[]` when empty) whose
+  fields have the same names as the table columns; `status` prints an object.
+- If the command fails — for example `status` or `storage-usage` with an
+  unreachable bucket — it exits non-zero, writes the error to stderr and
+  leaves stdout empty. `status --json` treats an unreachable bucket as a
+  failure; without `--json` it still prints `UNREACHABLE` as before.
+- `--json` on any other command exits non-zero with a message on stderr and
+  does not run the command.
+- Without `--json` the output is unchanged.
+
 ---
 
 ## status
@@ -38,6 +66,25 @@ vaults:   2 (341 revision(s) total)
 devices:  3 (last seen 2026-07-12T09:14:02.113Z)
 storage:  128.4 MB in 512 blob object(s)
 ```
+
+With `--json`:
+
+```
+$ admin status --json
+{
+  "version": "0.0.10",
+  "bucketReachable": true,
+  "authSource": "env",
+  "vaults": 2,
+  "revisions": 341,
+  "devices": 3,
+  "lastSeen": "2026-07-12T09:14:02.113Z",
+  "storage": { "megabytes": 128.4, "objects": 512 }
+}
+```
+
+`authSource` is `env`, `file` (set by `set-password`) or `none`; `lastSeen` is
+`null` when no device has registered.
 
 ## set-password
 
