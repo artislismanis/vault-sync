@@ -5,7 +5,16 @@ import { createObjectStore } from '../store/s3';
 import { hashPassword } from '../auth';
 import { deleteVault, rebuildIndex, revisionMetaKey, vaultMetaKey } from '../store/metadata-log';
 import { findPruneCandidates, pruneRevisions } from '../store/prune';
-import { passwordHashSource, writeStoredPasswordHash } from '../store/account';
+import { writeStoredPasswordHash } from '../store/account';
+import {
+  JSON_COMMANDS,
+  collectStatus,
+  formatStatus,
+  listDevices,
+  listVaults,
+  parseArgv,
+  storageUsage,
+} from './admin-read';
 
 // Minimal admin CLI, run inside the container (`docker exec … node dist/admin.cjs`)
 // or locally via `npm run -w server admin -- <command>`.
@@ -13,7 +22,7 @@ import { passwordHashSource, writeStoredPasswordHash } from '../store/account';
 const USAGE = `usage: admin <command>
 
 commands:
-  status                         one-screen overview: version, bucket, auth,
+  status [--json]                one-screen overview: version, bucket, auth,
                                  vaults, devices, storage
   set-password [password] [--stdin]
                                  change the account password (persists to
@@ -22,7 +31,7 @@ commands:
                                  restart needed). --stdin reads the password
                                  from stdin to keep it out of shell history
   hash-password <password>       print ACCOUNT_PASSWORD_HASH value for .env
-  vault-list                     list vaults (id, name, created_at)
+  vault-list [--json]            list vaults (id, name, created_at)
   vault-delete <vaultId> [--yes] PERMANENTLY delete a vault: all metadata,
                                  blobs, and index rows (preview unless --yes)
   rebuild-index                  rebuild the SQLite index from bucket sidecars
@@ -32,11 +41,14 @@ commands:
                                  delete non-head revisions older than N days
                                  (heads and tombstone heads always kept;
                                  prints a preview unless --yes)
-  storage-usage                  per-vault blob storage totals
-  device-list                    list registered devices/tokens
+  storage-usage [--json]         per-vault blob storage totals
+  device-list [--json]           list registered devices/tokens
   device-rename <deviceId> <newName>
                                  rename a device (as shown in version history)
   device-revoke <deviceId>       revoke a device's token
+
+--json (status, vault-list, device-list, storage-usage only): print one JSON
+document to stdout instead of text; errors go to stderr with a non-zero exit.
 `;
 
 async function readLineFromStdin(): Promise<string> {
@@ -50,8 +62,17 @@ function argValue(args: string[], flag: string): string | undefined {
   return at === -1 ? undefined : args[at + 1];
 }
 
+/** Print one JSON document to stdout — called only after the data was fully gathered. */
+function printJson(data: unknown): void {
+  process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+}
+
 async function main(): Promise<void> {
-  const [command, ...args] = process.argv.slice(2);
+  const { command, args, json } = parseArgv(process.argv.slice(2));
+
+  if (json && !JSON_COMMANDS.includes(command ?? '')) {
+    throw new Error(`--json is only supported by: ${JSON_COMMANDS.join(', ')}`);
+  }
 
   switch (command) {
     case 'hash-password': {
@@ -73,9 +94,14 @@ async function main(): Promise<void> {
     case 'vault-list': {
       const config = loadConfig();
       const db = openDb(config.DATA_DIR);
-      const rows = db.prepare('SELECT id, name, created_at FROM vault ORDER BY created_at').all();
-      console.table(rows);
-      db.close();
+      let rows;
+      try {
+        rows = listVaults(db);
+      } finally {
+        db.close();
+      }
+      if (json) printJson(rows);
+      else console.table(rows);
       return;
     }
     case 'rebuild-index': {
@@ -153,33 +179,22 @@ async function main(): Promise<void> {
       return;
     }
     case 'storage-usage': {
-      const store = createObjectStore(loadConfig());
-      const perVault = new Map<string, { bytes: number; objects: number }>();
-      for (const obj of await store.listWithMeta('blobs/')) {
-        const vaultId = obj.key.split('/')[1] ?? '?';
-        const entry = perVault.get(vaultId) ?? { bytes: 0, objects: 0 };
-        entry.bytes += obj.sizeBytes;
-        entry.objects += 1;
-        perVault.set(vaultId, entry);
-      }
-      console.table(
-        [...perVault.entries()].map(([vault, { bytes, objects }]) => ({
-          vault,
-          objects,
-          megabytes: Math.round((bytes / (1024 * 1024)) * 10) / 10,
-        })),
-      );
+      const rows = await storageUsage(createObjectStore(loadConfig()));
+      if (json) printJson(rows);
+      else console.table(rows);
       return;
     }
     case 'device-list': {
       const config = loadConfig();
       const db = openDb(config.DATA_DIR);
-      console.table(
-        db
-          .prepare('SELECT id, name, created_at, last_seen FROM device ORDER BY last_seen DESC')
-          .all(),
-      );
-      db.close();
+      let rows;
+      try {
+        rows = listDevices(db);
+      } finally {
+        db.close();
+      }
+      if (json) printJson(rows);
+      else console.table(rows);
       return;
     }
     case 'device-rename': {
@@ -245,35 +260,18 @@ async function main(): Promise<void> {
     case 'status': {
       const config = loadConfig();
       const db = openDb(config.DATA_DIR);
-      const store = createObjectStore(config);
-      const bucketOk = await store.checkBucket();
-      const vaults = db.prepare('SELECT COUNT(*) AS n FROM vault').get() as { n: number };
-      const revisions = db.prepare('SELECT COUNT(*) AS n FROM revision').get() as { n: number };
-      const devices = db
-        .prepare('SELECT COUNT(*) AS n, MAX(last_seen) AS latest FROM device')
-        .get() as { n: number; latest: string | null };
-      let blobBytes = 0;
-      let blobObjects = 0;
-      for (const obj of await store.listWithMeta('blobs/')) {
-        blobBytes += obj.sizeBytes;
-        blobObjects++;
+      let report;
+      try {
+        report = await collectStatus(SERVER_VERSION, config, db, createObjectStore(config));
+      } finally {
+        db.close();
       }
-      console.log(`vault-sync server ${SERVER_VERSION}`);
-      console.log(`bucket:   ${bucketOk ? 'reachable' : 'UNREACHABLE — check S3_* settings'}`);
-      const source = passwordHashSource(config.DATA_DIR, config.ACCOUNT_PASSWORD_HASH);
-      console.log(
-        source === 'none'
-          ? 'auth:     NO PASSWORD CONFIGURED — logins disabled'
-          : `auth:     password hash from ${source === 'file' ? 'account.json (set-password)' : 'env'}`,
-      );
-      console.log(`vaults:   ${vaults.n} (${revisions.n} revision(s) total)`);
-      console.log(
-        `devices:  ${devices.n}${devices.latest ? ` (last seen ${devices.latest})` : ''}`,
-      );
-      console.log(
-        `storage:  ${Math.round((blobBytes / (1024 * 1024)) * 10) / 10} MB in ${blobObjects} blob object(s)`,
-      );
-      db.close();
+      if (json) {
+        if (!report.bucket_reachable) throw new Error('bucket unreachable — check S3_* settings');
+        printJson(report);
+      } else {
+        for (const line of formatStatus(report)) console.log(line);
+      }
       return;
     }
     case 'device-revoke': {

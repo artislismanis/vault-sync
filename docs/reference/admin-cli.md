@@ -21,9 +21,17 @@ bucket is unreachable; commands that touch storage (`status`, `vault-delete`,
 `gc-blobs`, `prune`, `storage-usage`, `rebuild-index`) need valid `S3_*`
 configuration.
 
+**Machine-readable output** — the four read-only commands (`status`,
+`vault-list`, `device-list`, `storage-usage`) accept `--json`, before or after
+the command name. See [JSON output](#json-output).
+
 ---
 
 ## status
+
+```
+admin status [--json]
+```
 
 One-screen health overview: server version, bucket reachability, where the
 active password hash comes from, vault/revision counts, device count, blob
@@ -82,6 +90,10 @@ The `:`-separated format is deliberate — it survives docker compose
 interpolation, unlike crypt-style `$` separators.
 
 ## vault-list
+
+```
+admin vault-list [--json]
+```
 
 List vaults. Names are server-visible plaintext (docs/decisions.md
 2026-07-13); a vault created before that migration shows `null` until a
@@ -169,6 +181,10 @@ re-run with --yes to delete
 
 ## storage-usage
 
+```
+admin storage-usage [--json]
+```
+
 Per-vault blob storage totals.
 
 ```
@@ -181,6 +197,10 @@ $ admin storage-usage
 ```
 
 ## device-list
+
+```
+admin device-list [--json]
+```
 
 List registered devices (each successful plugin login registers one). The
 same names appear in the plugin's version-history view.
@@ -223,3 +243,50 @@ once revoked. Use for lost/retired devices.
 $ admin device-revoke 0b82fd13-4c8a-4c11-b7f2-91e04d7a2c66
 revoked 0b82fd13-4c8a-4c11-b7f2-91e04d7a2c66
 ```
+
+---
+
+## JSON output
+
+`status`, `vault-list`, `device-list` and `storage-usage` take `--json` for
+scripts and monitoring. `--json` may come before or after the command name:
+`admin vault-list --json` and `admin --json vault-list` are the same.
+
+With `--json` the command prints exactly one JSON document to stdout and
+nothing else, and the text/table output is not printed. Without it, output is
+unchanged.
+
+- `vault-list`, `device-list` and `storage-usage` print an array of objects
+  (`[]` when there is nothing to list). Keys are the table column names shown
+  above, with the same values — `megabytes` is still rounded to one decimal,
+  and a vault `name` that has not been backfilled is `null`.
+- `status` prints an object:
+
+  ```
+  $ admin status --json
+  {
+    "version": "0.0.10",
+    "bucket_reachable": true,
+    "auth": "env",
+    "vaults": 2,
+    "revisions": 341,
+    "devices": 3,
+    "last_seen": "2026-07-12T09:14:02.113Z",
+    "storage_bytes": 134637158,
+    "storage_objects": 512
+  }
+  ```
+
+  `auth` is where the active password hash comes from: `"file"`
+  (`account.json`), `"env"`, or `"none"` (logins disabled). `last_seen` is
+  `null` when no device is registered. Storage is in bytes here (unrounded).
+
+**Errors.** If a command fails — invalid configuration, or the bucket is
+unreachable — it exits non-zero, writes the error to stderr and leaves stdout
+empty, so `admin status --json | jq …` never sees partial output. For
+`status`, an unreachable bucket is a failure in `--json` mode (the text screen
+shows `UNREACHABLE` instead), so `bucket_reachable` is always `true` in a
+successful result.
+
+**Other commands.** `--json` on any other command (including no command) exits
+non-zero with a message on stderr, and does not run the command.
